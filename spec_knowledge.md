@@ -5,7 +5,7 @@
 | Tier | What                                 | Cost                          |
 |------|--------------------------------------|-------------------------------|
 | 1    | Local observation + role scope       | Free, always current          |
-| 2    | Skill gates (on-demand checks)       | Free, part of stat block      |
+| 2    | Skill gates (on-demand checks)       | Free, part of SkillsTrait     |
 | 3    | Virtual items (remote/hidden/unique) | Runtime cost, possibly stale  |
 
 Tiers 1 and 2 store nothing — they're evaluated when needed. Only tier 3 has runtime cost.
@@ -14,7 +14,7 @@ Tiers 1 and 2 store nothing — they're evaluated when needed. Only tier 3 has r
 
 ## Tier 1: Local Observation + Role Scope
 
-An entity in a region can directly query that region's terrain, structures, connections, and visible occupants from world state. No virtual item needed.
+An entity in a region can directly query that region's traits from world state. No virtual item needed.
 
 Beyond raw observation, a group's **role implies local knowledge**. Miners at Mine 3 know vein quality, capacity, and hazards — not because they carry virtual items, but because their role + location is a direct query key into world state.
 
@@ -40,62 +40,62 @@ Skill-based knowledge is **checked on demand, never stored**:
 
 ```
 Observation (local detail):
-    Geology ≥ 1 → sees ore type
-    Geology ≥ 3 → sees vein quality and estimated yield
-    Perception ≥ 3 → notices concealed weapons
+    Search ≥ 1 → sees ore type
+    Search ≥ 3 → sees vein quality and estimated yield
+    Observation ≥ 3 → notices concealed weapons
 
 Factual knowledge (when relevant):
-    History ≥ 2 → knows about the Old Kingdom's trade routes
-    Medicine ≥ 3 → recognizes plague symptoms, knows quarantine protocols
+    Research ≥ 2 → knows about the Old Kingdom's trade routes
+    Research ≥ 3 → recognizes plague symptoms, knows quarantine protocols
 
 Recipes / rules (attempting an action):
-    Metallurgy ≥ 2 → knows bronze alloy ratio
-    Metallurgy ≥ 4 → knows crucible steel technique
-
-Artifact identification:
-    Arcana ≥ 2 → recognizes enchanted items
-    History ≥ 3 → recognizes Old Kingdom craftsmanship
+    Crafting ≥ 2 → knows bronze alloy ratio
+    Crafting ≥ 4 → knows crucible steel technique
 ```
 
 ---
 
 ## Tier 3: Virtual Items
 
-Knowledge about a thing is a **partial, possibly stale, possibly wrong copy** of that thing. No separate knowledge graph. No belief system.
+Knowledge about a thing is a **node with ImmaterialTrait** — a partial, possibly stale, possibly wrong representation using the same trait system as real entities.
+
+### Virtual Item as Node
 
 ```
-VirtualItem {
-    mirrors: EntityRef,    // what real thing this represents
-    stats: StatBlock,      // what the knower thinks the stats are (partial, maybe wrong)
-    freshness: f32,        // age of information
-    source: Source,        // observed, taught, inferred, stolen
-    obscurity: f32,        // 0=common knowledge, 1=deeply hidden
-}
+Knowledge v-item = Node with:
+    ImmaterialTrait  { Owner }
+    Mirrors          { Owner, Target: NodeId }      // what real thing this represents
+    StatCopy         { Owner, FieldPath, Value }     // Multi: partial stat snapshot
+    ObscurityTrait   { Owner, Value }                // 0=public, 1=secret
 ```
+
+The v-item node lives in its knower's ContainerNode. It mirrors a real entity via the Mirrors relationship trait. StatCopy entries hold what the knower thinks the stats are (partial, possibly wrong).
 
 ### What Gets Mirrored
 
 Any entity type:
 
-- **Person/group**: species, approximate skills, equipment tier, last known location, disposition
+- **Person/group**: approximate attributes, equipment tier, last known location, disposition
 - **Item**: type, quality tier, last known location
 - **Location**: terrain, resources, connections, structures, occupants (a map = collection of location v-items)
-- **Plans**: virtual items mirroring desired future states (see `spec_plans.md`)
+- **Plans**: ImmaterialTrait + PlanMetaTrait (see `spec_plans.md`)
+- **Contracts**: ImmaterialTrait + ContractTermsTrait (see `spec_contracts_authority.md`)
+- **Authority claims**: ImmaterialTrait + AuthStrengthTrait + AuthScope
+
+See `architecture.md` §12 for full virtual item table.
 
 ### Meta-Knowledge (Recursive)
 
-Knowledge about what others know = virtual copy of them that contains virtual copies in their knowledge slot:
+Knowledge about what others know = a v-item that Mirrors another v-item:
 
 ```
 My knowledge about Enemy Faction:
-    VirtualItem(EnemyFaction) {
-        stats: { strength: ~500, location: FORTRESS_NORTH }
-        knowledge: [
-            VirtualItem(OurSecretTunnel) { ... }   // I think they know about our tunnel
-        ]
-        plans: [
-            VirtualItem(AttackPlan) { target: US }  // I think they plan to attack
-        ]
+    v-item(EnemyFaction) {
+        Mirrors → real EnemyFaction node
+        StatCopy: { strength: ~500, location: FORTRESS_NORTH }
+        contains:
+            v-item(OurSecretTunnel) { ... }   // I think they know about our tunnel
+            v-item(AttackPlan) { ... }         // I think they plan to attack
     }
 ```
 
@@ -133,12 +133,6 @@ propagation_chance = base_social_spread × (1.0 - obscurity) × proximity × fac
 - Counter-intelligence succeeds
 - Cover story established
 
-```
-obscurity_drift = -copy_count × EXPOSURE_RATE
-                  -evidence_visibility × EVIDENCE_RATE
-                  +containment_effort × SUPPRESSION_RATE
-```
-
 ---
 
 ## Cover Stories
@@ -146,11 +140,13 @@ obscurity_drift = -copy_count × EXPOSURE_RATE
 A cover story is a **false virtual item at lower obscurity** competing with the true one:
 
 ```
-True:  VirtualItem(TUNNEL, destination=ENEMY_FORTRESS, obscurity=0.9)
-Cover: VirtualItem(TUNNEL, destination=NEW_MINE, obscurity=0.3)
+True:  v-item(TUNNEL, StatCopy: destination=ENEMY_FORTRESS, Obscurity=0.9)
+Cover: v-item(TUNNEL, StatCopy: destination=NEW_MINE, Obscurity=0.3)
 ```
 
-Observers encounter the cover first. They need to overcome 0.9 obscurity to find the truth. If busted (someone follows the tunnel), they gain the true v-item at Observed source, and the cover collapses.
+Observers encounter the cover first. They need to overcome 0.9 obscurity to find the truth. If busted, they gain the true v-item at Observed source, and the cover collapses.
+
+V-items can be forged, stolen, or become stale — all for free because they're just nodes with traits.
 
 ---
 
@@ -158,27 +154,27 @@ Observers encounter the cover first. They need to overcome 0.9 obscurity to find
 
 ### Passive Spread (Social)
 
-Co-located groups exchange low-obscurity virtual items automatically. Rate proportional to group sizes and affinity. Items with obscurity > threshold don't spread.
+Co-located groups exchange low-obscurity v-items automatically. Rate proportional to Social.Fam and proximity. Items with ObscurityTrait.Value > threshold don't spread.
 
 ### Teaching
 
-Deliberate transfer. Teacher copies a virtual item to student at reduced confidence. Rate limited by teacher skill, student capacity, connection throughput.
+Deliberate transfer. Teacher copies a v-item to student with reduced StatCopy confidence. Rate limited by teacher skill, student capacity, connection throughput.
 
 ### Observation
 
-Within observation range (current + adjacent regions), entities query world state directly. Virtual items created only when leaving a region (snapshot) or actively investigating hidden things.
+Within observation range (current + adjacent regions), entities query world state directly. V-items created only when leaving a region (snapshot) or actively investigating hidden things.
 
 ### Espionage
 
-Solo leaf infiltrates target, copies virtual items from target's knowledge set. Only way to acquire items at obscurity > 0.8 without being original observer.
+Solo leaf infiltrates target, copies v-items from target's ContainerNode. Only way to acquire items at Obscurity > 0.8 without being original observer.
 
 ### Research
 
-Produces new virtual items for things not previously known. Creates first virtual copy of an uncopied entity or stat.
+Produces new v-items for things not previously known. Creates first virtual copy of an uncopied entity or stat.
 
 ### Forgetting
 
-Virtual items with low freshness dropped during coarsening. Important knowledge stays; trivia fades.
+V-items with low freshness (old StatCopy) dropped during coarsening. Important knowledge stays; trivia fades.
 
 ---
 
@@ -187,22 +183,25 @@ Virtual items with low freshness dropped during coarsening. Important knowledge 
 Simulation rules exist globally. An entity can only *use* a rule if their skill meets the minimum:
 
 ```
-Rule: Smelt iron          domain: Metallurgy, min_skill: 1
-Rule: Temper steel         domain: Metallurgy, min_skill: 3
-Rule: Exploit wall weakness domain: Combat, min_skill: 2
+Rule: smelt_iron              domain: Crafting, min_skill: 1
+Rule: temper_steel            domain: Crafting, min_skill: 3
+Rule: exploit_wall_weakness   domain: Tactics, min_skill: 2
 ```
 
 ### Secret Rules
 
-Some rules gated by possessing a specific virtual item rather than skill:
+Some rules gated by possessing a specific v-item rather than skill:
 
-```
-Rule: Damascus steel technique
-    conditions: [has(IRON_INGOT), has(SPECIAL_FLUX), has(VirtualItem(DAMASCUS_RECIPE))]
-    domain: Metallurgy, min_skill: 2
+```acf
+rule damascus_steel:
+    layer: L2_Items
+    scope: Condition
+    condition: contains(Owner, Material) AND Material.MaterialType == iron
+    condition: contains(Owner, Immaterial) AND Mirrors.Target == damascus_recipe
+    # requires v-item(DAMASCUS_RECIPE) in knower's possession
 ```
 
-The recipe is a v-item that can be copied (taught), stolen (espionage), or discovered (research). Rarity controlled by obscurity.
+The recipe is a v-item that can be copied (taught), stolen (espionage), or discovered (research). Rarity controlled by ObscurityTrait.Value.
 
 ---
 
@@ -211,7 +210,7 @@ The recipe is a v-item that can be copied (taught), stolen (espionage), or disco
 | Operation | Cost |
 |---|---|
 | Base rules + local geography + role knowledge | Zero — queried from world state |
-| Skills (including rule knowledge) | Part of stat block, free |
+| Skills (including rule knowledge) | Part of SkillsTrait, free |
 | Virtual items per node | O(0–20 typical) — only remote/hidden/unique |
 | Passive propagation | Filtered by obscurity threshold |
 | Plan validation | O(assumptions per plan), ~3–10 checks |

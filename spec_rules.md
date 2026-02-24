@@ -1,43 +1,38 @@
 # Rules (World Mechanics)
 
-Rules define state changes triggered by conditions. No agency. Evaluated every tick, scaled by dt.
+Rules define state changes triggered by conditions. No agency. Evaluated every tick, scaled by dt. Authored in `.acf`, compiled to IR (see `spec_expression_language.md` and `architecture.md` §8).
 
 ---
 
 ## Structure
 
 ```acf
-rule <id> [tags] {
-    when <Expr>
-    rate = <Expr>            # deterministic continuous
-    prob = <Expr>            # stochastic event
-    effect: <Effect>
-}
+rule <id>:
+    layer: <L0..L4>
+    scope: <TraitKind>           # iterate this trait table
+    condition: <Expr>            # optional, repeatable, all AND
+    effect: <Op> <Trait.Field> <params>
 ```
 
-`rate` and `prob` are mutually exclusive. Both scale by dt.
+Scope determines what the rule iterates. `scope: Vitals` iterates all nodes with VitalsTrait. `scope: ConnectedTo` iterates all ConnectedTo relationship instances.
 
-### Multi-Rule Shorthand
+### Rule Struct (registered at startup)
 
-Multiple rules in one block when they share context:
+```
+WorldRule {
+    Id: int
+    Layer: byte                     // L0..L4
+    Scope: ushort                   // TraitKind to iterate
+    MinScale: byte                  // skip nodes below this scale
+    MaxScale: byte                  // skip nodes above this scale
+    Probability: Fixed
+    Conditions: RuleCondition[]
+    Effects: RuleEffect[]
 
-```acf
-rule fire [physics, L0] {
-    spread:  when region.fire > 0 AND adjacent.has(Flammable),
-             prob = region.fire * adjacent.flammability * 0.01,
-             effect: adjacent.fire += 20
-
-    consume: when region.fire > 0,
-             rate = region.fire * 0.1,
-             effect: region.fuel -= rate * dt
-
-    quench:  when region.fire > 0 AND region.water > 0,
-             rate = region.water * 0.5,
-             effect: region.fire -= rate * dt
-
-    starve:  when region.fire > 0 AND region.fuel <= 0,
-             rate = 20,
-             effect: region.fire -= rate * dt
+    // Auto-derived at registration:
+    BatchModes: BatchMode[]
+    MaxDt: int
+    ThresholdPairs: ThresholdPair[]
 }
 ```
 
@@ -55,340 +50,254 @@ rule fire [physics, L0] {
 
 \*L3/L4 rules are agentless (things that happen TO actors). Rumor spreads whether anyone intends it. Prices drift without anyone deciding.
 
-No circular dependencies between layers. Higher layers may fire less often.
+No circular dependencies between layers. Higher layers may fire less often. Layers execute sequentially L0→L4. See `architecture.md` §9.
 
 ---
 
-## Batch Modes (Auto-Selected)
+## Elementary Ops
 
 ```
-Accumulate(rate * dt)                  deterministic continuous
-BernoulliOnce(1 - (1-p)^dt)           did event fire?
-PoissonCount(p * dt)                   how many times?
-NormalApprox(mean*dt, var*dt)          CLT for large groups
-TimeToThreshold(remaining/rate)        skip ticks entirely
+Accumulate      field += rate * dt  (or field += value - mitigator)
+Decay           field moves toward floor/ceiling at rate * dt
+Set             field = value
+Transfer        move value from source field to target field
+Spread          propagate value along connections by conductivity
+Create          spawn node from template
+Destroy         remove node
+AddTrait        attach trait to node
+RemoveTrait     detach trait from node
 ```
 
-### Selection Logic
+---
 
-```
-single entity + small dt   → exact roll or accumulate
-single entity + large dt   → BernoulliOnce or GeometricTime
-group + small dt            → PoissonCount
-group + large dt            → NormalApprox
-goal has threshold          → TimeToThreshold
-```
+## Batch Modes (Auto-Derived)
+
+| Effect | Deterministic | Stochastic |
+|--------|--------------|------------|
+| Accumulate | Linear | NormalApprox |
+| Decay | Linear | NormalApprox |
+| Set | Immediate | Bernoulli |
+| Transfer | Linear | NormalApprox |
+| Create | (invalid) | Poisson |
+| Destroy | Immediate | Bernoulli |
+| AddTrait | Immediate | Bernoulli |
+| RemoveTrait | Immediate | Bernoulli |
+
+Auto-derived from effect type + probability at rule registration. See `architecture.md` §8.
 
 ---
 
 ## Adaptive Timestep
 
-```
-Combat / player-observed:   dt = minutes
-Local settlement:           dt = 1 day
-Off-screen peacetime:       dt = 30 days
-World gen / history:        dt = 1 year
-```
+| Scale | dt | Layers |
+|-------|-----|--------|
+| Active (player) | 1–6 ticks (10s–1min) | L0–L4 |
+| Settlement (off-screen) | 8,640 (1 day) | L0–L4 batched |
+| Region | 60,480 (1 week) | L1–L4 |
+| Province | 259,200 (1 month) | L2–L4 |
+| Continent+ | 3,153,600+ (1 year+) | L3–L4 |
 
-Same rules. Same evaluator. Different dt.
+Same rules. Same evaluator. Different dt. Tier transitions: one catch-up tick at dt=gap. Worldgen: same sim at dt=1 year for N centuries.
 
 ---
 
 ## Rules as Switches
 
 ```
-rule.prob = 0 → rule never fires
-            → every plan with wait on dependent condition: step.prob = 0
-            → plan.confidence = 0
-            → planner never selects it
-            → cascades to compounds, counters, roles
+rule.Probability = 0 → rule never fires
+                     → every plan with wait on dependent condition: step.prob = 0
+                     → plan.confidence = 0
+                     → planner never selects it
+                     → cascades to compounds, counters, roles
 ```
 
 Game profiles are rule value tables (see Profiles section in `spec_infrastructure.md`).
 
 ---
 
+## Execution Model
+
+### Read-Write Phase Separation
+
+```
+Tick(world, dt: int32):
+    apply PlayerCommands (sorted by player id)
+    for layer in L0..L4:
+        for rule in layer:
+            if partition.scale outside [rule.MinScale, rule.MaxScale]: skip
+            READ  (parallel): evaluate conditions, compute deltas. Pure.
+            WRITE: resolve deltas, apply, clear.
+```
+
+### Delta Buffer
+
+All mutations via delta buffer. No mid-tick state changes.
+
+```
+Delta { Owner, Key, TraitKind, Field, Op (Add/Set), Value, Priority, RuleId }
+```
+
+Add: commutative sum. Set: highest priority, RuleId tiebreak. Deterministic regardless of evaluation order.
+
+### Determinism
+
+- Fixed Q16.16 or int everywhere. No floats in sim.
+- PRNG: `hash(world_seed, tick, rule_id, subject_id)` per roll.
+- Read-write separation per layer. All reads see pre-layer snapshot.
+
+---
+
 ## L0 — Physics
 
 ```acf
-rule temperature [physics, L0] {
-    solar:    when region.exposed_sky > 0,
-              rate = region.latitude_heat * world.season_modifier,
-              effect: region.temperature += rate * dt
+rule heat_spread:
+    layer: L0_Physics
+    scope: ConnectedTo
+    effect: Spread Climate.Temperature conductivity=ConnectedTo.Conductivity
 
-    conduct:  when edge(region, adj, adjacent),
-              rate = (adj.temperature - region.temperature) * edge(region, adj, adjacent).conductivity,
-              effect: region.temperature += rate * dt
+rule solar_heating:
+    layer: L0_Physics
+    scope: Climate
+    condition: Spatial.ScaleLevel == Tile
+    effect: Accumulate Climate.Temperature rate=sun_curve(Owner)
 
-    altitude: rate = region.altitude * 0.006,
-              effect: region.temperature -= rate
-}
+rule water_evaporate:
+    layer: L0_Physics
+    scope: Hydrology
+    condition: Hydrology.Water > 0
+    effect: Decay Hydrology.Water rate=0.05 floor=0
 
-rule water [physics, L0] {
-    evaporate: when region.water > 0,
-               rate = region.temperature * 0.05,
-               effect: region.water -= rate * dt
+rule fire_spread:
+    layer: L0_Physics
+    scope: Adjacent
+    condition: Burning.Fire > 0
+    condition: contains(Target, Flammable)
+    effect: Accumulate Burning.Fire value=20
+    # probability from Burning.Fire * Flammable.Ignition
 
-    rain:      when region.humidity > 70,
-               prob = region.humidity * 0.01,
-               effect: region.water += 30
+rule fire_consume:
+    layer: L0_Physics
+    scope: Burning
+    condition: Burning.Fire > 0
+    effect: Accumulate Burning.Fuel rate=-0.1
 
-    flow:      when region.water > region.capacity AND edge(region, adj, adjacent),
-               rate = (region.water - region.capacity) * edge(region, adj, adjacent).flow_rate,
-               effect: region.water -= rate * dt,
-               effect: adj.water += rate * dt
-
-    freeze:    when region.temperature < 0 AND region.water > 0,
-               rate = region.water * 0.1,
-               effect: region.ice += rate * dt,
-               effect: region.water -= rate * dt
-
-    thaw:      when region.temperature > 0 AND region.ice > 0,
-               rate = region.ice * 0.1,
-               effect: region.water += rate * dt,
-               effect: region.ice -= rate * dt
-}
-
-rule fire [physics, L0] {
-    spread:  when region.fire > 0 AND adjacent.has(Flammable),
-             prob = region.fire * adjacent.flammability * 0.01,
-             effect: adjacent.fire += 20
-
-    consume: when region.fire > 0,
-             rate = region.fire * 0.1,
-             effect: region.fuel -= rate * dt
-
-    quench:  when region.fire > 0 AND region.water > 0,
-             rate = region.water * 0.5,
-             effect: region.fire -= rate * dt
-
-    starve:  when region.fire > 0 AND region.fuel <= 0,
-             rate = 20,
-             effect: region.fire -= rate * dt
-}
-
-rule light [physics, L0] {
-    surface: effect: region.light = sun_curve(world.time, region.latitude)
-    underground: when region.depth > 0,
-                 effect: region.light = 0
-}
+rule fire_starve:
+    layer: L0_Physics
+    scope: Burning
+    condition: Burning.Fuel <= 0
+    effect: Set Burning.Fire value=0
 ```
 
 ## L1 — Biology
 
 ```acf
-rule crop_growth [biology, L1] {
-    grow:    when field.planted AND region.temperature > 5 AND region.water > 20 AND region.light > 0,
-             rate = field.fertility * 0.1,
-             effect: field.growth += rate * dt
+rule hunger_drain:
+    layer: L1_Biology
+    scope: Vitals
+    effect: Accumulate Vitals.Hunger rate=-0.001
 
-    wilt:    when field.planted AND region.water < 10,
-             rate = 0.5,
-             effect: field.health -= rate * dt
+rule starvation:
+    layer: L1_Biology
+    scope: Vitals
+    condition: Vitals.Hunger > 90
+    effect: Accumulate Vitals.Health rate=-0.01
 
-    die:     when field.health <= 0,
-             effect: field.planted = false
+rule healing:
+    layer: L1_Biology
+    scope: Vitals
+    condition: Vitals.Health < 100
+    condition: Vitals.Hunger < 50
+    condition: Vitals.Fatigue < 50
+    effect: Accumulate Vitals.Health rate=0.005
 
-    ready:   when field.growth >= field.crop.maturity,
-             effect: field.crop.ready = true
-}
+rule aging:
+    layer: L1_Biology
+    scope: Vitals
+    effect: Accumulate Vitals.Fatigue rate=0.001
 
-rule metabolism [biology, L1] {
-    hunger:  rate = entity.weight * 0.01,
-             effect: entity.hunger += rate * dt
-
-    thirst:  rate = entity.weight * 0.02 * (1 + region.temperature * 0.01),
-             effect: entity.thirst += rate * dt
-
-    fatigue: rate = entity.activity_level * 0.05,
-             effect: entity.fatigue += rate * dt
-
-    starve:  when entity.hunger > 90,
-             rate = 0.5,
-             effect: entity.health -= rate * dt
-
-    dehydrate: when entity.thirst > 90,
-               rate = 1.0,
-               effect: entity.health -= rate * dt
-
-    death:   when entity.health <= 0,
-             effect: entity => destroy,
-             effect: entity.location => create(corpse, { source = entity })
-}
-
-rule healing [biology, L1] {
-    natural: when entity.health < entity.health_max AND entity.hunger < 50 AND entity.fatigue < 50,
-             rate = entity.attributes.bod * 0.01,
-             effect: entity.health += rate * dt
-}
-
-rule disease [biology, L1] {
-    spread:  when entity.infected AND co_located(entity, target) AND NOT target.immune,
-             prob = entity.contagion * region.population / region.capacity * 0.01,
-             effect: target.infected = true
-
-    progress: when entity.infected,
-              rate = entity.disease.virulence * (1 - entity.attributes.bod * 0.005),
-              effect: entity.health -= rate * dt
-
-    recover: when entity.infected AND entity.health > 50,
-             prob = entity.attributes.bod * 0.01,
-             effect: entity.infected = false,
-             effect: entity.immune = true
-}
-
-rule aging [biology, L1] {
-    age:     rate = 1,
-             effect: entity.age += rate * dt
-
-    old_age: when entity.age > entity.lifespan * 0.8,
-             prob = (entity.age - entity.lifespan * 0.8) / (entity.lifespan * 0.2) * 0.01,
-             effect: entity.health -= 1
-}
+rule death:
+    layer: L1_Biology
+    scope: Vitals
+    condition: Vitals.Health <= 0
+    effect: Destroy
+    effect: Create corpse_template
 ```
 
 ## L2 — Items
 
 ```acf
-rule item_decay [items, L2] {
-    spoil:     when item.has(Perishable) AND NOT item.location.has(cold_storage),
-               rate = 0.02 * item.location.temperature / 20,
-               effect: item.condition -= rate * dt
+rule sword_decay:
+    layer: L2_Items
+    scope: Condition
+    effect: Decay Condition.Condition rate=0.0001 floor=0
 
-    rust:      when item.has(Material(iron)) AND item.location.humidity > 50,
-               rate = item.location.humidity * 0.01,
-               effect: item.condition -= rate * dt
+rule perishable_spoil:
+    layer: L2_Items
+    scope: Perishable
+    effect: Accumulate Condition.Condition rate=-Perishable.Rate
 
-    wear:      when item.equipped AND item.in_use,
-               rate = item.use_rate * 0.01,
-               effect: item.condition -= rate * dt
+rule item_break:
+    layer: L2_Items
+    scope: Condition
+    condition: Condition.Condition <= 0
+    effect: Destroy
 
-    break:     when item.condition <= 0,
-               effect: item => destroy
-}
-
-rule structure_decay [items, L2] {
-    weather:   when structure.exposed_sky > 0,
-               rate = 0.01 * (1 + region.water * 0.01),
-               effect: structure.condition -= rate * dt
-
-    overload:  when structure.load > structure.capacity,
-               rate = (structure.load - structure.capacity) * 0.1,
-               effect: structure.condition -= rate * dt
-
-    collapse:  when structure.condition <= 0,
-               effect: structure => destroy
-}
-
-rule fuel [items, L2] {
-    burn:      when fuel.in_use,
-               rate = region.fire * 0.1,
-               effect: fuel.amount -= rate * dt
-
-    lamp:      when light_source.lit,
-               rate = 1,
-               effect: light_source.fuel -= rate * dt
-
-    extinguish: when light_source.fuel <= 0,
-                effect: light_source.lit = false
-}
+rule fuel_burn:
+    layer: L2_Items
+    scope: LightSource
+    condition: LightSource.Brightness > 0
+    effect: Accumulate LightSource.FuelRate rate=-1
 ```
 
 ## L3 — Social
 
 ```acf
-rule social_judgment [social, L3] {
-    disapprove: when observer.knowledge.contains($expectation)
-                AND observer.witnessed($actor, $action)
-                AND $action != $expectation.expected_behavior,
-                effect: edge(observer, $actor, social).reputation -= $expectation.weight
+rule familiarity_grow:
+    layer: L3_Social
+    scope: Social
+    condition: distance(Owner, Target) < 10
+    effect: Accumulate Social.Fam rate=0.01
 
-    approve:    when observer.knowledge.contains($expectation)
-                AND observer.witnessed($actor, $action)
-                AND $action == $expectation.expected_behavior,
-                effect: edge(observer, $actor, social).reputation += $expectation.weight * 0.3
-}
+rule familiarity_fade:
+    layer: L3_Social
+    scope: Social
+    condition: distance(Owner, Target) > 100
+    effect: Decay Social.Fam rate=0.001 floor=0
 
-rule familiarity [social, L3] {
-    grow:      when a.location == b.location,
-               rate = 1,
-               effect: edge(a, b, social).familiarity += rate * dt
+rule eat_food:
+    layer: L3_Basic
+    scope: Vitals
+    condition: Vitals.Hunger > 50
+    condition: contains(Owner, Edible)
+    effect: Transfer Edible.Nutrition into=Vitals.Hunger
 
-    fade:      when a.location != b.location,
-               rate = 1,
-               effect: edge(a, b, social).familiarity -= rate * dt
+rule mood_hunger:
+    layer: L3_Social
+    scope: Vitals
+    condition: Vitals.Hunger > 50
+    effect: Accumulate Vitals.Mood rate=-0.01
 
-    affection_fade: when edge(a, b, social).familiarity < 30,
-                    rate = 0.01,
-                    effect: edge(a, b, social).affection *= (1 - rate * dt)
-
-    debt_resentment: when edge(a, b, social).debt > 50,
-                     rate = 1,
-                     effect: edge(a, b, social).affection -= rate * dt
-}
-
-rule knowledge_propagation [social, L3] {
-    spread:    when vitem.obscurity < 0.3 AND co_located(vitem.holder, target),
-               prob = (1 - vitem.obscurity) * edge(vitem.holder, target, social).familiarity * 0.01,
-               effect: target => copy_vitem(vitem, confidence * 0.8)
-
-    decay:     rate = 0.05,
-               effect: vitem.freshness -= rate * dt
-
-    normalize: when vitem.copy_count > 0,
-               rate = vitem.copy_count * 0.02,
-               effect: vitem.obscurity -= rate * dt
-}
-
-rule mood [social, L3] {
-    hunger:    when entity.hunger > 50,
-               effect: entity.mood -= 3 * dt
-
-    comfort:   when entity.housing_quality > 50,
-               effect: entity.mood += 1 * dt
-
-    crowding:  when region.population > region.capacity,
-               effect: entity.mood -= 2 * dt
-
-    threat:    when region.threat_level > 50,
-               effect: entity.mood -= region.threat_level * 0.05 * dt
-
-    unfulfilled: when entity.drives[$drive] > 70 AND entity.fulfillment[$drive] < 30,
-                 effect: entity.mood -= 5 * dt
-
-    recovery:  when entity.mood < 50 AND entity.hunger < 30 AND entity.health > 70,
-               effect: entity.mood += 2 * dt
-}
-
-rule unrest [social, L3] {
-    build:     when region.avg_mood < 25 AND region.authority_strength < 40,
-               rate = 5,
-               effect: region.unrest += rate * dt
-
-    revolt:    when region.unrest > 90,
-               effect: region => create(rebel_faction)
-}
+rule knowledge_spread:
+    layer: L3_Social
+    scope: Social
+    condition: distance(Owner, Target) < 10
+    # low-obscurity v-items propagate between co-located entities
+    # see spec_knowledge.md for propagation mechanics
 ```
 
 ## L4 — Economic
 
 ```acf
-rule supply_demand [economic, L4] {
-    price_up:   when region.demand[$good] > region.supply[$good],
-                rate = (region.demand[$good] - region.supply[$good]) * 0.01,
-                effect: region.price[$good] += rate * dt
+rule melee_combat:
+    layer: L4_Complex
+    scope: HostileTo
+    condition: distance(Owner, Target) < Weapon.Range
+    effect: SkillCheck Attack.Melee vs Defense.ActiveDefense
+    effect: Accumulate Vitals.Health value=-Weapon.Damage mitigated=Armor.Protection
 
-    price_down: when region.supply[$good] > region.demand[$good],
-                rate = (region.supply[$good] - region.demand[$good]) * 0.01,
-                effect: region.price[$good] -= rate * dt
-
-    floor:      when region.price[$good] < 1,
-                effect: region.price[$good] = 1
-}
-
-rule supply_depletion [economic, L4] {
-    consume:   when entity.weight > 0 AND entity.supplies > 0,
-               rate = entity.weight * entity.consumption_rate,
-               effect: entity.supplies -= rate * dt
-}
+rule supply_consume:
+    layer: L4_Economic
+    scope: Vitals
+    effect: Accumulate Edible.Nutrition rate=-0.01
+    # groups consume supplies proportional to Weight
 ```

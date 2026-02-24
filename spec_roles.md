@@ -16,16 +16,18 @@ role <id> : <parent>? [tags] {
 }
 ```
 
+Implementation: `ActiveRole { Owner, Target: TemplateId }` — a Multi relationship trait. An entity can hold multiple active roles simultaneously.
+
 ### Resolution
 
-An entity holds multiple roles. On each tick:
+An entity holds multiple roles (multiple ActiveRole trait instances). On each tick:
 1. Collect all rules from all active roles
 2. Sort by priority (lower = more urgent)
 3. Evaluate conditions top-down
 4. First rule whose condition is true → execute its action
 5. If no rule fires → default idle behavior
 
-Active plan steps (if any) override all role rules. See `spec_plans.md`.
+Active plan steps (AgencyTrait.ActivePlan) override all role rules. See `spec_plans.md`.
 
 ---
 
@@ -34,10 +36,10 @@ Active plan steps (if any) override all role rules. See `spec_plans.md`.
 Roles gained/lost through world state, not assignment:
 
 ```
-gain parent   { when edge(self, *, parent_of) exists }
-gain farmer   { when edge(self, *, employed_by WHERE type == farm) }
-lose farmer   { when NOT edge(self, *, employed_by WHERE type == farm) }
-gain guard    { when edge(self, *, assigned_to WHERE tags.contains(military)) }
+gain parent   { when Guards(Owner, child) exists }
+gain farmer   { when EmployedBy(Owner, farm) exists }
+lose farmer   { when EmployedBy(Owner, farm) not exists }
+gain guard    { when MemberOf(Owner, military_unit) exists }
 ```
 
 ### Shift Patterns
@@ -70,7 +72,7 @@ Specialized roles extend base roles:
 role laborer [economic] {
     work:  when workplace.has_task, do Modify.Direct { target = $task }, priority = 10
     haul:  when stockpile.needs_item, do Transfer.Direct { source = $item, destination = $stockpile }, priority = 15
-    rest:  when fatigue > 70, do rest {}, priority = 5
+    rest:  when Vitals.Fatigue > 70, do rest {}, priority = 5
 }
 
 role farmer : laborer [economic, rural] {
@@ -92,7 +94,7 @@ role master_smith : smith [economic, craft] {
              do Influence.Direct { target = $apprentice },
              priority = 8
 
-    craft_masterwork: when raw_materials.available AND self.skills.crafting > 80,
+    craft_masterwork: when contains(Owner, Material) AND Skills[5] > 80,
              do Modify.Indirect { recipe = $masterwork_recipe },
              priority = 10
 
@@ -108,16 +110,16 @@ role master_smith : smith [economic, craft] {
 role miner : laborer [economic, extraction] {
     shift = DAY_SHIFT
 
-    repair_tools: when tools.condition < 0.1,
+    repair_tools: when Condition.Condition < 10,
                   do Modify.Direct { target = $tools },
                   priority = 1
 
-    mine:         when mine.has(ore) AND carrying < max,
+    mine:         when NaturalResource.Amount > 0,
                   do Transfer.Direct { source = $mine },
                   priority = 2
 
-    haul:         when carrying(ore),
-                  do Transfer.Direct { source = self, destination = $smelter },
+    haul:         when contains(Owner, ore),
+                  do Transfer.Direct { source = Owner, destination = $smelter },
                   priority = 3
 
     clear:        when mine.blocked,
@@ -132,20 +134,20 @@ role miner : laborer [economic, extraction] {
 role guard [military] {
     shift = ROTATING_WATCH
 
-    combat_stations: when alert_level >= CRITICAL,
+    combat_stations: when PopulatedTrait.ThreatLevel >= 90,
                      do Defense.Indirect { position = $post },
                      priority = 1
 
-    engage:          when threat_in(patrol_route),
+    engage:          when HostileTo exists AND distance(Owner, Target) < 20,
                      do Attack.Direct { target = $threat },
                      priority = 2
 
-    patrol:          when post_assigned,
-                     do Move.Careful { route = $patrol_route },
+    patrol:          when MemberOf exists,
+                     do Move.Indirect { route = $patrol_route },
                      priority = 3
 
-    train:           when idle AND skills.attack < threshold,
-                     do Modify.Direct { target = self, skill = attack },
+    train:           when idle AND Skills[6] < threshold,
+                     do Modify.Direct { target = Owner, skill = attack },
                      priority = 4
 
     hold:            when idle,
@@ -169,27 +171,27 @@ role scout [military, reconnaissance] {
                      priority = 3
 
     patrol:          when idle,
-                     do Sense.Careful { route = $perimeter },
+                     do Sense.Indirect { route = $perimeter },
                      priority = 4
 }
 
 role healer [support, medical] {
     shift = ALWAYS_ON
 
-    critical:  when patient.health < 20,
-               do Modify.Careful { target = $patient },
+    critical:  when Vitals.Health < 20,
+               do Modify.Indirect { target = $patient },
                priority = 1
 
-    treat:     when patient.wounded,
-               do Modify.Careful { target = $patient },
+    treat:     when Vitals.Wounds > 0,
+               do Modify.Indirect { target = $patient },
                priority = 2
 
     restock:   when supplies.low,
-               do Modify.Indirect { recipe = $medicine },
+               do Modify.Structured { recipe = $medicine },
                priority = 3
 
     train:     when idle,
-               do Modify.Direct { target = self, skill = modify },
+               do Modify.Direct { target = Owner, skill = modify },
                priority = 4
 }
 
@@ -197,11 +199,11 @@ role merchant [economic, trade] {
     shift = MARKET_HOURS
 
     negotiate: when trader_arrived,
-               do Influence.Careful { target = $trader },
+               do Influence.Indirect { target = $trader },
                priority = 1
 
     export:    when export_ready,
-               do Transfer.Indirect { source = self, destination = $depot },
+               do Transfer.Structured { source = Owner, destination = $depot },
                priority = 2
 
     import:    when import_arrived,
@@ -209,7 +211,7 @@ role merchant [economic, trade] {
                priority = 3
 
     appraise:  when idle,
-               do Sense.Careful { target = $goods },
+               do Sense.Indirect { target = $goods },
                priority = 4
 }
 ```
@@ -222,41 +224,37 @@ Basic survival and social behavior — the first layer with agency. Single-step 
 
 ```acf
 role survival [basic, L3] {
-    eat:       when hunger > 60,
+    eat:       when Vitals.Hunger > 60,
                do Transfer.Direct { source = $food },
                priority = 1
 
-    drink:     when thirst > 60,
+    drink:     when Vitals.Thirst > 60,
                do Move.Direct { destination = $water },
                priority = 1
 
-    rest:      when fatigue > 70,
+    rest:      when Vitals.Fatigue > 70,
                do Move.Direct { destination = $shelter },
                priority = 2
 
-    flee:      when health < 30 OR region.threat > skills.defense * 2,
+    flee:      when Vitals.Health < 30 OR PopulatedTrait.ThreatLevel > 80,
                do Move.Direct { destination = $safe_area },
                priority = 0
 
-    warm:      when region.temperature < cold_tolerance,
+    shelter:   when Climate.Temperature < cold_tolerance,
                do Move.Direct { destination = $warm_region },
                priority = 3
-
-    shelter:   when region.weather == storm,
-               do Move.Direct { destination = $shelter },
-               priority = 2
 }
 
 role social_basic [basic, L3] {
-    join_group:  when drives.belonging > 60 AND NOT edge(self, *, member_of),
+    join_group:  when Drives.Belonging > 60 AND NOT MemberOf exists,
                  do Move.Direct { destination = $nearest_group },
                  priority = 5
 
-    feed_child:  when edge(self, $child, parent_of) AND child.hunger > 50,
+    feed_child:  when Guards(Owner, child) AND child.Vitals.Hunger > 50,
                  do Transfer.Direct { target = $child, item = food },
                  priority = 3
 
-    warn:        when region.threat > 70,
+    warn:        when PopulatedTrait.ThreatLevel > 70,
                  do Influence.Direct { target = $group, info = $threat },
                  priority = 2
 }
@@ -266,16 +264,10 @@ role social_basic [basic, L3] {
 
 ## Role → Job Instantiation
 
-A role becomes a job instance when bound to a specific workplace and holder:
+A role becomes a job instance when bound to a specific workplace and holder. ActiveRole trait + workplace context = job.
 
 ```
-JobInstance {
-    role: RoleId,
-    workplace: RegionRef,
-    holder: NodeRef,
-    shift: ShiftSchedule,
-    local_overrides: Rule[]?,       // player/leader can add/reorder rules
-}
+JobInstance = ActiveRole(holder → role_template) + workplace node + shift schedule
 ```
 
-A group of 200 miners at Mine 3 shares one JobInstance. The rules evaluate against Mine 3's world state. A different group at Mine 7 has a different instance of the same role, evaluating against Mine 7.
+A group of 200 miners at Mine 3 shares one role binding. The rules evaluate against Mine 3's world state. A different group at Mine 7 has a different instance of the same role, evaluating against Mine 7.

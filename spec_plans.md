@@ -6,33 +6,21 @@ Plans handle non-routine activity: strategic decisions, novel situations, multi-
 
 ## Structure
 
-A plan is a virtual item mirroring a desired future state:
+A plan is a virtual item — a node with ImmaterialTrait + PlanMetaTrait:
 
 ```
-VirtualItem(Plan) {
-    mirrors: GOAL_STATE,
-    stats: {
-        template: TemplateId,
-        goal: Condition[],
-        steps: Step[],
-        current_step: usize,
-        assumptions: VirtualItem[],
-        assigned_to: NodeRef[],
-        priority: f32,
-        obscurity: f32,
-    }
-}
-
-Step {
-    action: ActionId,
-    actor: NodeRef,
-    preconditions: Condition[],
-    status: Pending | Active | Complete | Failed | Skipped,
-    substeps: Step[]?,
-}
+Plan v-item = Node with:
+    ImmaterialTrait   { Owner }
+    PlanMetaTrait     { Owner, CurrentStep: int, TotalSteps: int, Confidence: Fixed }
 ```
 
-Plans are knowledge items. They can be shared (taught), stolen (espionage), stale (assumptions diverged), or wrong (based on bad intelligence).
+Plan steps live in templates. Runtime tracks current step index only (AgencyTrait on the executing entity).
+
+```
+AgencyTrait { Owner, ActivePlan: TemplateId, ActivePlanStep: int }
+```
+
+Plans are knowledge items. They can be shared (taught), stolen (espionage), stale (assumptions diverged), or wrong (based on bad intelligence) — all for free because they're just nodes with traits.
 
 ---
 
@@ -52,35 +40,34 @@ plan military.siege [military, territorial] {
 
     method assault {
         when {
-            force.weight > target.garrison * 2
-            force.skills.attack > 40
+            force.Weight > target.garrison * 2
+            Skills.Attack > 40
         }
-        priority = force.drives.dominance * 0.5
+        priority = Drives.Dominance * 0.5
 
         assemble: do military.assemble_force { destination = $target.region }
-        survey:   do Sense.Careful { target = $target.walls }
+        survey:   do Sense.Indirect { target = $target.walls }
         BREACH:   do military.breach_walls { walls = $target.walls }
-            prob = sigmoid(force.skills.attack - target.walls.condition * 0.5)
+            prob = sigmoid(Skills.Attack - target.walls.Condition * 0.5)
             fail = STARVE
         storm:    do military.storm { garrison = $target.garrison }
     }
 
     method starve_out {
         when {
-            force.weight > target.garrison * 1.2
+            force.Weight > target.garrison * 1.2
             force.supplies > target.supplies * 1.5
         }
-        priority = force.drives.survival * 0.7
+        priority = Drives.Survival * 0.7
 
         assemble: do military.assemble_force { destination = $target.region }
         STARVE:   do military.blockade { target = $target }
         exhaust:  wait target.supplies <= 0
-            prob = prob(target.consumption_rate > target.supply_rate)
         demand:   do Influence.Direct { target = $target.leader }
     }
 
-    done { target.owner == force.faction }
-    fail { force.weight < 10 }
+    done { OwnedBy.Target == force.faction }
+    fail { force.Weight < 10 }
 }
 ```
 
@@ -89,7 +76,7 @@ plan military.siege [military, territorial] {
 ## Probabilistic Planning
 
 ```
-step.prob = Expression over actor/world state (never a constant)
+step.prob = Expression over traits (never a constant)
 plan.confidence = product(step.prob for critical path)
 plan.utility = confidence × goal_value - total_cost
 ```
@@ -129,7 +116,7 @@ Groups execute plans through fractional allocation:
 - Fractional assignment → proportional progress rate
 
 ```
-Cohort(200 workers):
+Cohort(Weight=200):
     Plan A (build wall):    fraction=0.5 → 100 workers equivalent
     Plan B (stockpile food): fraction=0.3 → 60 workers equivalent
     Role rules:              fraction=0.2 → 40 workers on routine work
@@ -140,8 +127,8 @@ Cohort(200 workers):
 ## Priority Resolution
 
 ```
-1. Active plan step (if assigned and preconditions met)
-2. Highest-priority rule across active role instances
+1. Active plan step (AgencyTrait.ActivePlan, if preconditions met)
+2. Highest-priority rule across active role instances (ActiveRole traits)
 3. Default idle behavior
 ```
 
@@ -189,38 +176,6 @@ Ocean's Eleven  = investigate → recruit → false_identity → smuggle → mis
 Game of Thrones = forge_alliance → turn_agent → undermine → frame → coup → blackmail
 ```
 
-### Compound Structure
-
-```
-CompoundAction {
-    preconditions: Condition[],
-    decomposition: Step[],
-    completion: Condition[],
-    failure: Condition[],
-}
-```
-
-Example:
-
-```acf
-plan military.assemble_force [military] {
-    params { target_strength, location }
-
-    method standard {
-        when { available_military >= target_strength * 0.5 }
-
-        recruit: do Influence.Direct { target = $recruits }
-            when available_military < target_strength
-        train:   do Modify.Direct { target = $recruits, skill = attack }
-            when avg_skill < threshold
-        march:   do Move.Direct { destination = $location }
-
-        done { count(force AT $location) >= target_strength }
-        fail { available_military < target_strength * 0.3 }
-    }
-}
-```
-
 ---
 
 ## Strategic Templates
@@ -229,25 +184,14 @@ plan military.assemble_force [military] {
 
 ```acf
 plan military.raid [military, offensive] {
-    # goal: weaken target without holding territory
     scout:    do Sense.Indirect { target = $target_region }
     assemble: do military.assemble_force { destination = $staging_area }
-    approach: do Move.Careful { destination = $target, secrecy = 0.7 }
+    approach: do Move.Indirect { destination = $target, secrecy = 0.7 }
     strike:   do Attack.Direct { target = $target }
     withdraw: do Move.Direct { destination = $home }
-        when force.casualties > 0.3 OR objective.complete
+        when Vitals.Health < 70
 
-    done { target.military < target.military_initial * 0.7 }
-}
-
-plan military.ambush_defense [military, defensive] {
-    # goal: destroy attacking force using terrain
-    scout:   do Sense.Careful { target = $approaches }
-    deploy:  do Move.Careful { destination = $hidden_positions, secrecy = 0.8 }
-    wait:    wait enemy.location == $kill_zone
-    strike:  do Attack.Direct { target = $enemy }
-    pursue:  do Move.Direct { destination = $enemy.retreat_route }
-        when enemy.morale < 30
+    done { target.Vitals.Health < 30 }
 }
 ```
 
@@ -255,23 +199,13 @@ plan military.ambush_defense [military, defensive] {
 
 ```acf
 plan economic.trade_route [economic, diplomatic] {
-    # goal: establish recurring exchange
     scout:     do Sense.Indirect { target = $destination }
-    negotiate: do Influence.Careful { target = $partner, terms = $deal }
-    ship_out:  do Transfer.Indirect { goods = $export, destination = $partner }
-    receive:   do Transfer.Indirect { goods = $import, source = $partner }
+    negotiate: do Influence.Indirect { target = $partner, terms = $deal }
+    ship_out:  do Transfer.Structured { goods = $export, destination = $partner }
+    receive:   do Transfer.Structured { goods = $import, source = $partner }
 
-    done { self.inventory[$import] > $threshold }
-    fail { edge(self, $partner, social).affection < -20 }
-}
-
-plan economic.resource_expansion [economic, territorial] {
-    scout:   do Sense.Indirect { target = $candidate_regions }
-    claim:   do Influence.Direct { target = $region }
-    build:   do Modify.Indirect { blueprint = $extraction_structure, location = $region }
-    staff:   do Influence.Direct { target = $workers }
-
-    done { $region.production > 0 }
+    done { contains(Owner, $import) }
+    fail { Social.Aff(Owner, $partner) < -20 }
 }
 ```
 
@@ -279,30 +213,13 @@ plan economic.resource_expansion [economic, territorial] {
 
 ```acf
 plan political.subversion [political, covert] {
-    # goal: weaken rival from within
     infiltrate: do Sense.Indirect { target = $rival_faction, secrecy = 0.9 }
-    identify:   do Sense.Careful { target = $discontented_groups }
+    identify:   do Sense.Indirect { target = $discontented_groups }
     recruit:    do Influence.Indirect { target = $sympathizers, secrecy = 0.8 }
-    misdirect:  do Influence.Indirect { target = $rival_leader, false = true }
     exploit:    wait $rival_faction.unrest > 70
     strike:     do political.coup { target = $rival_faction }
 
     done { $rival_faction.leader == $puppet }
-}
-```
-
-### Survival
-
-```acf
-plan survival.famine_response [survival, emergency] {
-    ration:   do Transfer.Indirect { policy = rationing }
-    forage:   do Transfer.Direct { source = $wilderness }
-    trade:    do Transfer.Indirect { goods = $luxury, receive = food }
-    migrate:  do Move.Indirect { destination = $fertile_region }
-        when food_supply < population * 10
-
-    done { food_supply > population * 60 }
-    # escalation: each step triggers only if prior insufficient
 }
 ```
 
@@ -322,35 +239,11 @@ Max 4 deep. Beyond that, knowledge confidence too low.
 plan military.siege [military] {
     ...
     counter threat.troops_massing {
-        military.fortify      when self.walls.condition > 30
-        military.sortie       when self.garrison > force.weight * 0.3
-        political.call_allies when any(edge(self, *, alliance))
+        military.fortify      when Condition.Condition > 30
+        military.sortie       when Weight > force.Weight * 0.3
+        political.call_allies when AlliedWith exists
     }
 }
 ```
 
 Counter selection is a skill check. A leader with Tactics ≥ 3 considers all counters. Tactics ≥ 1 might only see the obvious one.
-
----
-
-## Conditions
-
-Mirror the action hierarchy — can be high-level or atomic:
-
-### Atomic
-
-```
-HAS(entity, item, amount)      AT(entity, region)
-SKILL_GE(entity, domain, level) ALIVE(entity)
-CONNECTED(region_a, region_b)   CONTROLS(faction, region)
-```
-
-### Compound
-
-```
-STRONGER_THAN(a, b): a.military > b.military × 1.2
-SUPPLY_SECURE(f, r): HAS(f, r, ≥ demand×2) OR TRADE_ROUTE_ACTIVE(f, r)
-VULNERABLE(t):       t.garrison < t.threat_level OR t.morale < 0.3
-```
-
-Compound conditions decompose like compound actions — shorthand evaluated against world state.

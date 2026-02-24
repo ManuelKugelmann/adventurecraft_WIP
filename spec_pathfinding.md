@@ -17,18 +17,13 @@ Zone graph:      ~15 nodes, 2–4 edges each         ← strategic movement
 Province graph:  ~5 nodes                           ← world map
 ```
 
-Each edge is a **connection** with properties:
+Each edge is a **ConnectedTo** relationship trait:
 
 ```
-Connection {
-    regions: (RegionId, RegionId),
-    width: u16,              // tiles wide
-    throughput: f32,         // entities per game-second
-    terrain_cost: f32,       // speed modifier (road=0.5, swamp=3.0)
-    current_flow: f32,       // traffic right now
-    capacity_remaining: f32, // throughput - current_flow
-}
+ConnectedTo { Owner, Target, Throughput: Fixed, TerrainCost: Fixed, Width: Fixed, Conductivity: Fixed }
 ```
+
+Runtime-derived: `current_flow`, `capacity_remaining = Throughput - current_flow`.
 
 Throughput is the key concept. A 2-tile doorway has much lower throughput than a 10-tile road. A group of 200 doesn't teleport through — it queues.
 
@@ -184,17 +179,19 @@ When congestion exceeds thresholds:
 
 Flow state is a stat dimension on the node:
 
-```
-stats.movement:
-    Stationary { region: RegionId }
+Flow state tracked as traits on the moving node:
 
-    Flowing {
-        route: RegionId[],
-        progress: f32,         // 0.0=origin, 1.0=destination
-        flow_rate: f32,        // effective after congestion
-        bottleneck: ConnectionId  // what's limiting, for UI
-    }
 ```
+FlowTrait {
+    Owner: NodeId
+    Route: ...                  // region sequence
+    Progress: Fixed             // 0=origin, 1=destination
+    FlowRate: Fixed             // effective after congestion
+    Bottleneck: NodeId          // limiting ConnectedTo, for UI
+}
+```
+
+Stationary nodes have no FlowTrait. Moving nodes get FlowTrait added, removed on arrival.
 
 ---
 

@@ -2,70 +2,63 @@
 
 ## Object System
 
-### Single Struct + Composable Traits
+### Objects Are Nodes with Traits
+
+No separate Object struct. Objects are nodes with composable traits. A sword is a Node with WeaponTrait + ConditionTrait + HeavyTrait + MaterialTrait + ValuableTrait.
 
 ```
-Object {
-    id, template, traits: [Trait], condition, quantity,
-    owner: EntityRef?,    // legal claim
-    holder: EntityRef?,   // physical possession
-    location, secrecy, crafted: CraftedInfo?
-}
-
-CraftedInfo {
-    creator: EntityRef,
-    quality: f32,                  // skill at time of creation
-    materials: [MaterialRef],      // inputs → affect traits
-    recipe: TemplateId,
-}
+iron_sword:   Node(Weight=1) + Weapon(12, 1.0, 1) + Heavy(3) + Material(iron) + Condition(0.9, 0.7) + Valuable(50)
+torch:        Node(Weight=1) + LightSource(0.7, 1.0) + Flammable(0.8, 20) + Heavy(1) + Weapon(3, 0.8, 1)
+cooked_steak: Node(Weight=1) + Perishable(0.1) + Edible(40, 70) + Flammable(0.6, 5)
 ```
 
-### Trait Examples
-
-Flat composable tags with optional payload. No hierarchy.
+### Trait Examples (all Single, all Fixed Q16.16)
 
 ```
-Trait =
-    | Perishable(rate)
-    | Flammable(ignition, fuel_value)
-    | Edible(nutrition, taste)
-    | Weapon(damage, speed, range)
-    | Armor(protection, encumbrance)
-    | Tool(domain, bonus)
-    | Container(capacity)
-    | Liquid(viscosity)
-    | Heavy(weight)
-    | Fragile(break_threshold)
-    | Valuable(base_price)
-    | Degradable(rate)
-    | Magical(effect, charge)
-    | Concealed(bonus)
-    | Stackable(max)
-    | Material(type)
-    | Poisonous(potency)
-    | LightSource(brightness, fuel_rate)
-    ...
+WeaponTrait         { Owner, Damage, Speed, Range }
+ArmorTrait          { Owner, Protection, Encumbrance }
+PerishableTrait     { Owner, Rate }
+FlammableTrait      { Owner, Ignition, FuelValue }
+EdibleTrait         { Owner, Nutrition, Taste }
+ToolTrait           { Owner, Domain: int, Bonus }
+ContainerTrait      { Owner, Capacity }
+HeavyTrait          { Owner, Mass }
+FragileTrait        { Owner, BreakThreshold }
+ValuableTrait       { Owner, BasePrice }
+StackableTrait      { Owner, Max: int }
+MaterialTrait       { Owner, MaterialType: int }
+LightSourceTrait    { Owner, Brightness, FuelRate }
+ConcealedTrait      { Owner, Bonus }
+ConditionTrait      { Owner, Condition, Quality }
+ImmaterialTrait     { Owner }
 ```
 
-Example objects:
-
-```
-iron_sword:   [Weapon(12, 1.0, 1), Heavy(3), Material(iron), Degradable(0.01), Valuable(50)]
-torch:        [LightSource(0.7, 1.0), Flammable(0.8, 20), Heavy(1), Weapon(3, 0.8, 1)]
-cooked_steak: [Perishable(0.1), Edible(40, 70), Flammable(0.6, 5)]
-```
-
-Masterwork items: same traits but `crafted.quality` scales relevant trait values.
+See `architecture.md` §5 for full list.
 
 ### Rules Reference Traits Directly
 
-```
-item.condition -= item.trait(Perishable).rate * location.temperature * 0.05  | item.has(Perishable)
-item.condition -= location.humidity * 0.01                                   | item.has(Material(iron))
-item           => ignite                                                     | item.has(Flammable) AND region.fire > item.trait(Flammable).ignition
+```acf
+rule item_spoil:
+    layer: L2_Items
+    scope: Perishable
+    condition: NOT contains(Owner, cold_storage)
+    effect: Accumulate Condition.Condition rate=-0.02
+
+rule item_rust:
+    layer: L2_Items
+    scope: Material
+    condition: Material.MaterialType == iron
+    condition: Climate.Humidity > 50
+    effect: Accumulate Condition.Condition rate=-0.01
+
+rule item_ignite:
+    layer: L2_Items
+    scope: Flammable
+    condition: Burning.Fire > Flammable.Ignition
+    effect: AddTrait Burning
 ```
 
-No type checks, no inheritance casts. Just `has(Trait)` and `trait(T).field`.
+No type checks, no inheritance casts. Scope iterates the trait table directly.
 
 ### Material Composition Through Crafting
 
@@ -73,61 +66,60 @@ Material traits propagate from inputs. Recipe defines which traits carry forward
 
 ```
 CRAFT(iron_sword, materials: [iron_ingot, wood_handle])
-=> object gets:
+=> node gets:
    Material(iron)          // from iron_ingot
    Flammable(0.1, 5)      // from wood_handle, reduced — mostly metal
-   crafted.materials = [iron, wood]
 ```
+
+Masterwork items: same traits but ConditionTrait.Quality scales relevant trait values.
 
 ---
 
 ## Owner vs Holder
 
-Owner = social/legal claim (backed by authority). Holder = physical fact.
+**Owner** = legal claim via OwnedBy relationship trait (backed by authority).
+**Holder** = physical fact via ContainerNode.
 
-| Situation              | Owner          | Holder          |
-|------------------------|----------------|-----------------|
-| Own hammer             | blacksmith     | blacksmith      |
-| Stolen sword           | original_owner | thief           |
-| Rented workshop        | landlord       | tenant          |
-| Lent horse             | lender         | borrower        |
-| Abandoned loot         | null           | null            |
-| Carried message        | sender         | courier         |
-| Commissioned WIP       | knight         | blacksmith      |
+| Situation              | OwnedBy Target  | ContainerNode    |
+|------------------------|------------------|------------------|
+| Own hammer             | blacksmith       | blacksmith       |
+| Stolen sword           | original_owner   | thief            |
+| Rented workshop        | landlord         | tenant           |
+| Lent horse             | lender           | borrower         |
+| Abandoned loot         | (no OwnedBy)    | ground tile      |
+| Carried message        | sender           | courier          |
 
-Theft = changing holder without owner consent. Applies to spatial nodes too.
+Theft = changing ContainerNode without OwnedBy holder's consent. Applies to spatial nodes too.
 
 ---
 
 ## Bulk Groups & Materialization
 
-### Bulk Storage
+### Bulk = Weight on Node
 
-Fungible items stored as aggregate stats:
+Fungible items stored as a single node with Weight > 1:
 
 ```
-BulkGroup {
-    template: ObjectTemplateId,
-    quantity: u32,
-    avg_condition: f32,
-    avg_quality: f32,
-}
+Grain pile:    Node(Weight=500) + Edible + Perishable + Condition
+Arrow bundle:  Node(Weight=50) + Weapon
 ```
+
+ConditionTrait tracks average condition/quality across the batch.
 
 ### Implicit → Explicit
 
-Region resources are implicit stats → GATHER → explicit object:
+Region resources are traits on spatial nodes → GATHER → explicit object node:
 
 ```
-region.trees = 500          // implicit
+NaturalResource(Kind=trees, Amount=500) on Region node    // implicit
 GATHER(trees):
-region.trees -= 1
-=> create(object, {template: log, traits: [Flammable, Heavy, Material(wood)]})
+    NaturalResource.Amount -= 1
+    → Create node from log template                        // explicit
 ```
 
 ### Materialize on Demand
 
-Objects extracted from bulk groups when:
+Individual objects extracted from bulk nodes (Weight decremented, new Weight=1 node created) when:
 - Player inspects
 - Theft/looting
 - Item becomes story-relevant
@@ -138,44 +130,58 @@ Objects extracted from bulk groups when:
 
 ## Spatial Hierarchy
 
-Single node type: World → Province → Zone → Region → TileGroup → Tile.
+Spatial nodes = any node with SpatialTrait. Scale tracked by `SpatialTrait.ScaleLevel`:
 
 ```
-SpatialNode {
-    children: [SpatialNode],
-    owner: EntityRef?,             // legal claim
-    holder: EntityRef?,            // physical occupant/tenant
-    tags: [ZoneTag],               // purpose designation
-    contents: [BulkGroup],         // stored objects (bulk)
-    special_items: [ObjectId],     // materialized individual objects
+enum SpatialScale : byte {
+    Tile, Room, Building, Block, District, Settlement,
+    Region, Province, Continent, Planet, System, Sector, Empire
 }
+```
+
+Tile grid: Tile through Settlement (cells, physics, LOS).
+Graph: Settlement and above (topology, aggregate stats).
+Coordinates local to containing node. Stellar = travel-time edges.
+
+See `architecture.md` §10 for scale and adaptive dt.
+
+### Spatial Traits
+
+```
+SpatialTrait        { Owner, ScaleLevel: int, Capacity }
+ClimateTrait        { Owner, Temperature, Humidity }
+HydrologyTrait      { Owner, Water }
+LightingTrait       { Owner, Light }
+BurningTrait        { Owner, Fire, Fuel }
+SoilTrait           { Owner, Fertility }
+PopulatedTrait      { Owner, Population: int, ThreatLevel }
+VehicleTrait        { Owner, Speed }
 ```
 
 ### Derived Properties
 
-Computed from child tiles on demand, not stored:
+Computed from contained child nodes, not stored:
 
 ```
-node.enclosed     = all boundary tiles have walls
-node.roofed       = all tiles have ceiling
-node.area         = tiles.len()
-node.capacity     = f(area, ceiling_height)
-node.temperature  = f(enclosed, roofed, ambient, insulation, heat_sources)
-node.light        = f(roofed, windows, light_sources, time_of_day)
-node.access       = boundary tiles with openings
+enclosed     = all boundary tiles have walls
+roofed       = all tiles have ceiling
+area         = count of contained Tile nodes
+capacity     = f(area, ceiling_height)
+temperature  = ClimateTrait (propagated via Spread rules)
+light        = LightingTrait
+access       = boundary tiles with ConnectedTo edges
 ```
 
 ### Everything Is a Spatial Node
 
-| Example          | Enclosed | Roofed    | Tags                        |
-|------------------|----------|-----------|-----------------------------|
-| Kitchen          | yes      | yes       | `[cooking, storage.food]`   |
-| Workshop         | yes      | yes       | `[smithing, storage.metal]` |
-| Market square    | no       | no        | `[trading, gathering]`      |
-| Farm field       | no       | no        | `[farming]`                 |
-| Mine shaft       | yes      | yes (rock)| `[mining, storage.ore]`     |
-| Ship deck        | yes      | no        | `[navigation, combat]`      |
-| Forest clearing  | no       | no        | `[foraging, camping]`       |
+| Example          | Tags                        |
+|------------------|-----------------------------|
+| Kitchen          | `[cooking, storage.food]`   |
+| Workshop         | `[smithing, storage.metal]` |
+| Market square    | `[trading, gathering]`      |
+| Farm field       | `[farming]`                 |
+| Mine shaft       | `[mining, storage.ore]`     |
+| Ship deck        | `[navigation, combat]`      |
 
 ### Tags Drive Action Eligibility
 
@@ -187,26 +193,26 @@ REST                  needs tags: [sleeping]
 RESEARCH              needs tags: [library] or [laboratory]
 ```
 
-### Buildings = Parent Nodes
+### Buildings = Parent Spatial Nodes
 
-A building is a spatial node whose children are room nodes:
+A building is a spatial node whose contained children are room nodes:
 
 ```
-Tavern (tags: [commercial, social])
-├── Common room (tags: [gathering, eating])
-├── Kitchen (tags: [cooking, storage.food])
-├── Room 1 (tags: [sleeping, rental])
-└── Cellar (tags: [storage.drink])
+Tavern (SpatialTrait, ScaleLevel=Building)
+├── Common room (SpatialTrait, ScaleLevel=Room, tags: [gathering, eating])
+├── Kitchen (SpatialTrait, ScaleLevel=Room, tags: [cooking, storage.food])
+├── Room 1 (SpatialTrait, ScaleLevel=Room, tags: [sleeping, rental])
+└── Cellar (SpatialTrait, ScaleLevel=Room, tags: [storage.drink])
 ```
 
 District → buildings. Settlement → districts. Same structure all the way up.
 
-### Vehicles = Moving Subtrees
+### Vehicles = Moving Spatial Subtrees
 
-A vehicle is a spatial subtree whose tiles share velocity:
+A vehicle is a spatial node with VehicleTrait whose contained tiles share velocity:
 
 ```
-Merchant Ship (tags: [transport, naval])
+Merchant Ship (SpatialTrait + VehicleTrait)
 ├── Deck (tags: [navigation, combat])
 ├── Hold (tags: [storage.cargo])
 ├── Cabin (tags: [sleeping, command])
@@ -215,25 +221,19 @@ Merchant Ship (tags: [transport, naval])
 
 ### Containers = Just Nodes
 
-Portable containers (backpack, chest) are the same as spatial containers — just smaller and moveable. Both hold BulkGroups and special_items. Both have owner/holder.
+Portable containers (backpack, chest) use ContainerTrait. Any node can contain other nodes via ContainerNode. Both hold items; both can have OwnedBy.
 
-### Owner / Holder on Spatial Nodes
+### Connections Between Spatial Nodes
 
-| Situation            | Owner            | Holder           |
-|----------------------|------------------|------------------|
-| Lord's castle room   | lord             | lord             |
-| Rented market stall  | market_guild     | merchant         |
-| Occupied enemy fort  | original_faction | invading_faction |
-| Squatted building    | original_owner   | squatters        |
-| Leased farmland      | landowner        | tenant_farmer    |
+ConnectedTo relationship trait defines edges in the spatial graph:
 
-### Object Secrecy
+```
+ConnectedTo { Owner, Target, Throughput, TerrainCost, Width, Conductivity }
+Adjacent    { Owner, Target }
+```
 
-Objects carry a single `secrecy` value (0–100):
+Used for pathfinding flow, heat spread, and connectivity queries. See `spec_pathfinding.md`.
 
-- **secrecy ≤ 30**: Public knowledge — location/ownership determined by vicinity (temporal, spatial, interactional proximity)
-- **secrecy > 30**: Private — requires explicit knowledge tracking
+### Object Concealment
 
-High-secrecy objects provide stealth bonuses to actions; low-secrecy objects create stealth penalties (hidden dagger vs ornate greatsword).
-
-MODIFY actions change secrecy: hiding objects increases it, revealing decreases it.
+ConcealedTrait provides stealth bonuses to actions. ObscurityTrait on virtual items controls knowledge propagation. Hidden dagger (ConcealedTrait) vs ornate greatsword (no ConcealedTrait).

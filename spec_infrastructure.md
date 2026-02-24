@@ -17,15 +17,18 @@
 ### Data Budget per Node
 
 ```
-StatBlock:       ~200 bytes (9 attrs + 23 skills + 7 drives + location + health + mood)
-Relationships:   ~40 bytes × rel_count (typically 5–20 per node)
-Inventory:       ~20 bytes × bulk_groups (typically 3–10)
-Knowledge:       ~60 bytes × v_items (typically 0–20, most carry 0)
-Template ref:    8 bytes
-Children refs:   8 bytes × child_count (0 for leaves)
+Node struct:     ~20 bytes (Id, Template, Weight, ContainerNode, ParentNode, Flags)
+VitalsTrait:     ~28 bytes (7 Fixed fields)
+AttributesTrait: ~28 bytes (7 Fixed fields)
+SkillsTrait:     ~92 bytes (23 Fixed fields)
+DrivesTrait:     ~28 bytes (7 Fixed fields)
+Social traits:   ~24 bytes × rel_count (typically 5–20 per node)
+Inventory:       contained nodes via ContainerIndex
+Knowledge:       v-item nodes (typically 0–20, most carry 0)
+Template ref:    4 bytes (TemplateId)
 ```
 
-~2 KB per leaf, ~500 bytes per compound (delta from template).
+Compound nodes store only delta from template. Leaf nodes have full trait sets.
 
 ### Computational Budget per Tick
 
@@ -37,6 +40,34 @@ Knowledge propagation: O(co-located pairs × low-obscurity items) ~100 per tick
 ```
 
 Target: <2ms per simulation tick on a single core.
+
+---
+
+## Spatial Scale
+
+```
+enum SpatialScale : byte {
+    Tile, Room, Building, Block, District, Settlement,
+    Region, Province, Continent, Planet, System, Sector, Empire
+}
+```
+
+Tile grid: Tile through Settlement (cells, physics, LOS).
+Graph: Settlement and above (topology, aggregate stats).
+Coordinates local to containing node. Stellar = travel-time edges.
+
+### Adaptive Timestep by Scale
+
+| Scale | dt | Layers |
+|-------|-----|--------|
+| Active (player) | 1–6 ticks (10s–1min) | L0–L4 |
+| Settlement (off-screen) | 8,640 (1 day) | L0–L4 batched |
+| Region | 60,480 (1 week) | L1–L4 |
+| Province | 259,200 (1 month) | L2–L4 |
+| Continent+ | 3,153,600+ (1 year+) | L3–L4 |
+
+Tier transitions: one catch-up tick at dt=gap.
+Worldgen: same sim at dt=1 year for N centuries.
 
 ---
 
@@ -65,9 +96,9 @@ Major state changes only: births, deaths, faction changes, major battles, leader
 ### History Queries
 
 Used for:
-- Knowledge decay (how stale is a v-item?)
-- Reputation building (long-term relationship patterns)
-- Authority tradition (compliance history)
+- Knowledge decay (how stale is a v-item's StatCopy?)
+- Reputation building (long-term Social.Rep patterns)
+- Authority tradition (compliance history for AuthStrengthTrait.Tradition)
 - Player timeline / event log
 
 ---
@@ -179,20 +210,81 @@ nudge = 1.0  snap to nearest template
 
 ```
 Engine:        Unity + Burst compiler
-Arithmetic:    Q16.16 fixed-point (deterministic)
-Collections:   NativeList, NativeParallelMultiHashMap (cache-friendly)
-Execution:     read-write phase separation
-Templates:     precompiled → bytecode-like evaluation
+Arithmetic:    Q16.16 Fixed (int32), 0x00010000 = 1.0
+               Range: ±32767, Precision: 1/65536
+               mul/div via int64 intermediate
+               Transcendentals: lookup tables (sigmoid, sqrt, Ziggurat normal)
+Collections:   NativeList, NativeHashMap, NativeParallelMultiHashMap
+Execution:     Read-write phase separation per layer
+Templates:     .acf → IR → Tier 1 codegen Burst/HLSL (shipping) + Tier 2 interpreter (mods)
 File format:   .acf (TOML-compatible)
+Time:          1 tick = 10s, dt = int32 tick count, clock = int64
 ```
+
+IDs, tick counters, quantities: plain integers. `ToFloat()` one-way gate for rendering only.
 
 ### Read-Write Phase Separation
 
-Each simulation tick has two phases:
-1. **Read phase**: all nodes read world state, evaluate conditions, select actions
-2. **Write phase**: all selected actions applied to world state simultaneously
+```
+Tick(world, dt: int32):
+    apply PlayerCommands (sorted by player id)
+    for layer in L0..L4:
+        READ  (parallel): evaluate conditions, compute deltas. Pure.
+        WRITE: resolve deltas, apply, clear.
+```
 
 No mid-tick state mutations. Deterministic regardless of evaluation order.
+
+### Delta Buffer
+
+All mutations via delta buffer:
+
+```
+Delta { Owner, Key, TraitKind, Field, Op (Add/Set), Value, Priority, RuleId }
+```
+
+Add: commutative sum. Set: highest priority, RuleId tiebreak.
+
+### Determinism
+
+- Fixed or int everywhere. No floats in sim.
+- PRNG: `hash(world_seed, tick, rule_id, subject_id)` per roll.
+- Mutations via delta buffer only.
+
+### Parallelism
+
+```
+Read phase:  Burst IJobParallelFor over trait Data arrays
+Write phase: single-threaded
+Layers:      sequential L0→L4
+Spatial partitions: parallel within layer, sync at boundary
+```
+
+### Multiplayer & Distribution
+
+Authoritative server model. Single-player = local server + one client. No code path difference.
+
+```
+Clients:   send PlayerCommands, receive filtered deltas
+Fog of war: knowledge system filters per player per trait kind
+```
+
+Distributed: each server owns a spatial partition. Cross-partition via boundary messages (entity transfer, remote deltas). Delta merge: Add=sum (commutative), Set=priority+RuleId (deterministic). Sync barrier per layer before write phase.
+
+---
+
+## Templates
+
+```
+NodeTemplate {
+    Id: TemplateId
+    Parent: TemplateId?             // template inheritance
+    DefaultWeight: int
+    DefaultTraits: TraitInstance[]   // stamped onto node on CREATE
+}
+```
+
+CREATE = allocate node, walk template parent chain, copy default traits.
 
 ---
 
@@ -206,14 +298,7 @@ Enforcement pipeline:
     4. CI pipeline validation
 ```
 
-Validation rules (see `spec_file_format.md` for full list):
-- Expression resolution to terminals
-- Valid Action × Approach from 7×3 table
-- Decomposition depth ≤ 6
-- Counter chains ≤ 4
-- No circular plan references
-- No references to authority/reputation as stored stats
-- Counter observables reference only externally visible state
+See `spec_file_format.md` for full validation rules list.
 
 ---
 

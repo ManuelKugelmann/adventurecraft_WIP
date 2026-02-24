@@ -12,7 +12,7 @@ Design decisions that were explored and rejected, with reasons.
 
 **Why discarded**: Introduced a parallel data structure alongside the entity graph. Required its own query language, propagation rules, and consistency checking. The belief/inference machinery added complexity without proportional gameplay benefit.
 
-**Replaced by**: Virtual items — partial, possibly stale copies of real entities stored in the knower's inventory using the same StatBlock structure as real entities. No separate graph. Knowledge about a thing IS a copy of that thing. Meta-knowledge (knowing what others know) is just recursion depth in the v-item tree. See `spec_knowledge.md`.
+**Replaced by**: Virtual items — nodes with ImmaterialTrait + Mirrors + StatCopy + ObscurityTrait. Partial, possibly stale copies of real entities stored in the knower's ContainerNode. No separate graph. Knowledge about a thing IS a node that mirrors that thing. Meta-knowledge (knowing what others know) is a v-item that Mirrors another v-item. See `spec_knowledge.md`.
 
 ---
 
@@ -24,7 +24,7 @@ Design decisions that were explored and rejected, with reasons.
 
 **Why discarded**: Too coarse. The 3-attribute model couldn't distinguish between strength and agility or between willpower and intelligence. One skill per action provided no strategic choice — there was only one way to do anything. Missing drives (luxury, lawful, moral) prevented generating meaningful personality variation and moral dilemmas.
 
-**Replaced by**: 9 attributes (3×3 matrix: Physical/Mental/Social × Power/Coordination/Endurance), 23 skills (7 actions × 3 approaches + 2 meta), 7 drives. The 3-approach structure per action is the key design — it creates meaningful tactical choices (direct/careful/indirect) without excessive granularity. See `spec_core_stats.md`.
+**Replaced by**: 7 stored attributes (Str, Agi, Bod, Will, Wit, Spi, Cha) + 2 derived (Authority, Reputation), 23 skills (7 actions × 3 approaches + 2 meta), 7 drives. The 3-approach structure per action is the key design — it creates meaningful tactical choices (direct/indirect/structured) without excessive granularity. See `spec_core_stats.md`.
 
 ---
 
@@ -38,7 +38,7 @@ Example contract types included: employment, trade agreements, service contracts
 
 **Why discarded**: Contracts are just expectations + consequences. A formal Contract struct duplicated information already representable as virtual items (expectations about behavior), social rules (judgment on compliance), and authority mechanics (enforcement). The dedicated machinery added implementation complexity without enabling behavior that the simpler system couldn't produce.
 
-**Replaced by**: Expectation v-items + social_judgment rules + authority roles. "Law" = expectation v-item + authority role + punishment plan. "Tradition" = high-familiarity expectation with slow decay. "Custom" = expectation + social judgment. No dedicated contract type needed. See `spec_contracts_authority.md`.
+**Replaced by**: Contracts integrated as virtual items — nodes with ImmaterialTrait + ContractTermsTrait. They get forgery, staleness, theft, and propagation for free through the v-item machinery. Enforcement via expectation v-items + social_judgment rules + authority roles. "Law" = expectation v-item + authority role + punishment plan. "Tradition" = high-familiarity expectation with slow decay. No dedicated contract type or state machine needed. See `spec_contracts_authority.md`.
 
 ---
 
@@ -108,7 +108,7 @@ Example contract types included: employment, trade agreements, service contracts
 
 **Why discarded**: Category hierarchies create boundary problems (is a torch a weapon or a light source?). Different struct layouts per type require polymorphic dispatch. Categories are rigid — adding a new cross-cutting concern (e.g., "can be thrown") requires touching every category.
 
-**Replaced by**: Single Object struct with composable traits. A torch has `[LightSource, Flammable, Weapon, Heavy]`. Rules reference traits directly: `item.has(Weapon)`, `item.trait(Flammable).ignition`. No categories, no hierarchy. See `spec_objects_and_space.md`.
+**Replaced by**: Objects are nodes with composable traits. A torch is a Node + LightSourceTrait + FlammableTrait + WeaponTrait + HeavyTrait. Rules iterate trait tables directly via scope. No categories, no hierarchy, no separate Object struct. See `spec_objects_and_space.md`.
 
 ---
 
@@ -120,7 +120,7 @@ Example contract types included: employment, trade agreements, service contracts
 
 **Why discarded**: Over-engineered. The per-object knowledge tracking with vicinity calculations and history integration added significant complexity for a problem already solved by the virtual items system. Most object knowledge doesn't need explicit tracking — it falls under local observation (tier 1) or the object's secrecy stat filters propagation naturally.
 
-**Replaced by**: Object secrecy is just the `obscurity` field on virtual items that represent objects. Low obscurity = common knowledge. High obscurity = requires espionage. The same propagation mechanics that handle all other knowledge handle object location knowledge. See `spec_knowledge.md`.
+**Replaced by**: Object secrecy is just the ObscurityTrait.Value on v-item nodes that represent objects. Low obscurity = common knowledge. High obscurity = requires espionage. The same propagation mechanics that handle all other knowledge handle object location knowledge. See `spec_knowledge.md`.
 
 ---
 
@@ -130,4 +130,24 @@ Example contract types included: employment, trade agreements, service contracts
 
 **Why discarded**: Violates the core design principle of "store only fundamental state, derive everything else." A stored Authority stat can become stale or inconsistent with the actual relationships and military power it should reflect. Stored Wealth duplicates information already present in the inventory system.
 
-**Replaced by**: All three are derived on demand. Authority = f(force, delegation, consensus, tradition). Reputation = aggregate of reputation axes across relationships. Wealth = sum of owned valuables. See `spec_core_stats.md`.
+**Replaced by**: All three are derived on demand. Authority via AuthStrengthTrait on authority claim v-items. Reputation = aggregate of Social.Rep across relationships. Wealth = sum of ValuableTrait on owned nodes. See `spec_core_stats.md`.
+
+---
+
+## 12. Free-Form Expression Language
+
+**What it was**: A general-purpose expression language with two primitives — `STAT(entity, path)` and `EDGE(from, to, type, ...)` — plus a full grammar supporting property access (`e.health`, `item.trait(Weapon).damage`), transitive edge queries with aggregation, math/comparison/logical operators, and mutation syntax (`e.health += 5`, `entity => destroy`). Sugar macros like `HAS()`, `AT()`, `ALIVE()` resolved to these primitives.
+
+**Why discarded**: The free-form grammar required a complex parser and runtime evaluator that couldn't leverage Burst compilation efficiently. Property paths like `e.skills.combat` implied a monolithic StatBlock, which was incompatible with the trait-based ECS architecture. Transitive edge queries with variable depth were expensive and rarely needed. The expression language was a DSL within a DSL, adding a layer of indirection between authoring and execution.
+
+**Replaced by**: Structured rule IR with elementary ops. Conditions are `RuleCondition { TraitKind, Field, Op, Value }`. Effects are `RuleEffect { Op, Target, TraitKind, Field, Value }`. Nine elementary ops (Accumulate, Decay, Set, Transfer, Spread, Create, Destroy, AddTrait, RemoveTrait) cover all mutations. Five built-in functions (distance, contains, count, sigmoid, depth) cover spatial/containment queries. Compiles directly to Burst jobs (Tier 1) or walks as IR (Tier 2). See `spec_expression_language.md` and `architecture.md` §8.
+
+---
+
+## 13. Monolithic StatBlock per Entity
+
+**What it was**: Each node carried a single `StatBlock` struct containing all stats: `{ location, health, mood, attributes[9], skills[23], drives[7] }`. All values were `f32`. Relationships, inventory, and knowledge were separate arrays on the node.
+
+**Why discarded**: A monolithic StatBlock means every entity carries every field, even when most fields are irrelevant (a sword doesn't need drives, a tile doesn't need skills). This wastes memory at scale and prevents efficient cache-line iteration over hot fields. The `f32` type makes deterministic cross-platform simulation impossible.
+
+**Replaced by**: Trait-based ECS with separate typed tables. Each trait is its own blittable struct (VitalsTrait, AttributesTrait, WeaponTrait, etc.) stored in SingleTraitTable or MultiTraitTable. Entities only have traits relevant to them. Hot traits (Vitals — every tick) are separated from cold traits (Drives — near-never). All values are Fixed Q16.16 (int32). See `architecture.md` §5–6.

@@ -1,88 +1,94 @@
 # Contracts, Orders & Authority
 
-## No Explicit Contract System
+## Contracts as Virtual Items
 
-Expectations are virtual items in knowledge. Actors predict consequences; nothing is binding.
+Contracts are nodes with ImmaterialTrait + ContractTermsTrait. No separate contract system — contracts get forgery, staleness, theft, and propagation for free through the virtual item machinery.
+
+```
+ContractTermsTrait  { Owner, ContractType: int, Status: int, Duration: int, Frequency: int }
+```
+
+A contract node lives in the ContainerNode of its holder(s). Party relationships link the contract to involved entities.
+
+### Contract Types
+
+All encoded through ContractTermsTrait fields + expectation v-items:
+
+```
+Employment:  ContractTerms + EmployedBy relationship + work expectation v-items
+Trade deal:  ContractTerms + obligation expectation v-items
+Alliance:    ContractTerms + AlliedWith relationship + mutual defense expectations
+Lease:       ContractTerms + OwnedBy (landlord) + ContainerNode occupancy
+```
+
+### Enforcement Through Expectations
+
+Expectations are separate virtual item nodes (ImmaterialTrait + relevant traits) that define expected behavior. Two generic rules handle all social enforcement:
+
+```acf
+rule social_judgment:
+    layer: L3_Social
+    scope: Social
+    # observers who hold expectation v-items judge actors
+    # disapproval: Accumulate Social.Rep rate=-weight
+    # approval:    Accumulate Social.Rep rate=+weight*0.3
+```
+
+### What Emerges
 
 ```
 Custom:     expectation v-item + social_judgment rule
-Law:        expectation v-item + social_judgment rule + authority role + punishment plan
+Law:        expectation v-item + authority role + punishment plan
 Tradition:  expectation v-item, high familiarity propagation, slow decay
 Taboo:      penalty-only expectation, no approval for compliance
 Tyranny:    authority punishes without expectation v-items
+Culture:    shared expectation v-items + local relationship patterns (no keyword, no system)
 ```
-
-Two generic rules handle all social enforcement:
-
-```acf
-rule social_judgment [social, L3] {
-    disapprove: when observer.knowledge.contains($expectation)
-                AND observer.witnessed($actor, $action)
-                AND $action != $expectation.expected_behavior,
-                effect: edge(observer, $actor, social).reputation -= $expectation.weight
-
-    approve:    when observer.knowledge.contains($expectation)
-                AND observer.witnessed($actor, $action)
-                AND $action == $expectation.expected_behavior,
-                effect: edge(observer, $actor, social).reputation += $expectation.weight * 0.3
-}
-```
-
-### Expectation V-Items
-
-```
-VirtualItem(Expectation) {
-    mirrors: BEHAVIOR_PATTERN,
-    stats: {
-        expected_behavior: ActionPattern,
-        weight: f32,                      // severity of judgment
-        context: Condition,               // when this expectation applies
-        source: tradition | law | custom, // affects propagation rate
-    },
-    obscurity: f32,                       // how widely known
-}
-```
-
-"Culture" is shared expectation v-items + local relationship patterns. Propagates through familiarity. Drifts naturally. No keyword, no special system.
 
 ---
 
 ## Authority
 
-Authority is always derived, never stored. Four sources:
+Authority is always derived, never stored. Authority **claims** are virtual items (nodes with ImmaterialTrait + AuthStrengthTrait + AuthScope):
+
+```
+AuthStrengthTrait   { Owner, Force, Consensus, Tradition, Delegation }  // all Fixed
+AuthScope           { Owner, Target }  // Multi: what the authority covers
+DelegatedFrom       { Owner, Target }  // Multi: chain of delegation
+```
 
 ### Authority Sources
 
 ```
 Force:       military presence in the region
-Delegation:  granted by someone with existing authority (chain)
+Delegation:  granted by someone with existing authority (chain via DelegatedFrom)
 Consensus:   aggregate approval from the governed population
 Tradition:   long-standing familiarity × compliance patterns
 ```
 
-Each is computed from existing state:
+Each computed from existing traits:
 
 ```
-authority.force      = holder.military_in(region)
-authority.consensus  = avg(edge(holder, population, social).affection)
-authority.tradition  = avg(edge(holder, population, social).familiarity) × compliance_history
-authority.delegation = product(delegation_chain_strengths)
+Force      = count(military nodes in region) × average Attributes.Str
+Consensus  = avg(Social.Aff where Target = holder, across governed population)
+Tradition  = avg(Social.Fam where Target = holder) × compliance_history
+Delegation = product(AuthStrength along DelegatedFrom chain)
 ```
 
 ### Effective Authority
 
 ```
-authority_strength = weighted_sum(force, delegation, consensus, tradition)
+authority_strength = weighted_sum(Force, Delegation, Consensus, Tradition)
 ```
 
-The weights themselves can vary by region/culture (some cultures weight tradition heavily, others weight consensus).
+Weights vary by region/culture (some cultures weight tradition heavily, others weight consensus). Weights are expectation v-items themselves — meta-norms about how authority works.
 
 ### Compliance Check
 
-An order is obeyed when the authority strength behind it exceeds the resistance:
+An order is obeyed when authority strength exceeds resistance:
 
 ```
-resistance = target.drives.dominance × (1 - edge(target, authority, social).affection * 0.01)
+resistance = target.Drives.Dominance × (1 - Social.Aff(target→authority) * 0.01)
 compliance = authority_strength > resistance
 ```
 
@@ -92,35 +98,35 @@ Non-compliance triggers enforcement plans from the authority holder.
 
 ## Orders
 
-Orders are plan steps assigned across entity boundaries.
+Orders are virtual items (ImmaterialTrait) assigned across entity boundaries. An order is a plan step that the issuer delegates to a subordinate.
 
 ### Decomposition Cascade
 
 ```
 King:           plan(CONQUER_PROVINCE) → steps: [raise_army, march, siege]
-  ↓ order: raise_army
+  ↓ order v-item: raise_army
 General:        plan(RAISE_ARMY) → steps: [recruit, equip, train]
-  ↓ order: recruit
+  ↓ order v-item: recruit
 Captain:        plan(RECRUIT) → steps: [visit_villages, persuade, march_to_camp]
-  ↓ order: persuade
+  ↓ order v-item: persuade
 Sergeant:       do Influence.Direct { target = $villagers }
 ```
 
-Each level decomposes one step further. The order carries:
+Each level decomposes one step further. The order v-item carries:
 - The action to perform
-- The authority chain backing it
+- The authority chain backing it (DelegatedFrom relationships)
 - The expected completion conditions
 - Consequences for failure
 
 ### Order Compliance
 
 An entity receiving an order evaluates:
-1. Do I recognize this authority? (delegation chain valid?)
+1. Do I recognize this authority? (DelegatedFrom chain valid?)
 2. Does the authority strength exceed my resistance?
 3. Can I actually execute this? (skills, resources, location)
 4. Does this conflict with higher-priority orders?
 
-If all pass → the order becomes an active plan step for the recipient.
+If all pass → the order becomes an active plan step (AgencyTrait updated).
 If authority insufficient → non-compliance → enforcement.
 If impossible → failure report up the chain.
 
@@ -131,13 +137,13 @@ If impossible → failure report up the chain.
 When multiple authority sources conflict:
 
 ```
-1. Direct military threat (force, immediate)
-2. Active plan step from recognized superior (delegation)
-3. Community expectations (consensus + tradition)
+1. Direct military threat (Force, immediate)
+2. Active plan step from recognized superior (Delegation)
+3. Community expectations (Consensus + Tradition)
 4. Role default behavior
 ```
 
-A soldier obeys their commander (delegation) over community norms (consensus/tradition) unless the order is extreme enough to trigger moral resistance (drives.moral > threshold).
+A soldier obeys their commander (Delegation) over community norms (Consensus/Tradition) unless the order is extreme enough to trigger moral resistance (Drives.Moral > threshold).
 
 ---
 
@@ -146,11 +152,11 @@ A soldier obeys their commander (delegation) over community norms (consensus/tra
 Different authority source weightings produce recognizable governance patterns:
 
 ```
-Heavy force + low consensus     → tyranny / military occupation
-High delegation + tradition     → feudalism / aristocracy
-High consensus + low force      → democracy / republic
-Heavy tradition + low force     → tribal / elder council
-Balanced all four               → stable mixed government
+Heavy Force + low Consensus      → tyranny / military occupation
+High Delegation + Tradition      → feudalism / aristocracy
+High Consensus + low Force       → democracy / republic
+Heavy Tradition + low Force      → tribal / elder council
+Balanced all four                → stable mixed government
 ```
 
 No governance system is hardcoded. These emerge from the relative strengths of authority sources in a region.
