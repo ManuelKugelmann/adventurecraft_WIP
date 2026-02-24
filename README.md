@@ -180,6 +180,7 @@ Specification modules:
 - `spec_infrastructure.md` — Scale strategy, history aging, bundles, profiles, tech stack
 - `spec_expression_language.md` — Condition/effect language, elementary ops, built-in functions
 - `spec_file_format.md` — `.acf` grammar, validation rules
+- `spec_narrative.md` — Event tuples, trajectory readout, LLM narrative rendering
 
 ---
 
