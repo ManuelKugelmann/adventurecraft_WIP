@@ -1,0 +1,151 @@
+# AdventureCraft \u2014 Consolidated System Design
+
+## Design Principles
+
+- Store only fundamental state. Derive everything else on demand.
+- Emergent complexity from simple composable building blocks.
+- All conditions reference concrete, measurable values. No abstract concepts.
+- Wealth = owned valuables. Reputation = relationship patterns. No separate stats for emergent properties.
+- Static properties defined via parent template hierarchy, not stored per-entity.
+
+---
+
+## Core Attributes (9 \u2014 3\u00d73 Matrix)
+
+| | Power | Coordination | Endurance/Resource |
+|---|---|---|---|
+| **Physical** | Strength | Agility | Body (HP) |
+| **Mental** | Willpower | Intelligence | Spirit (mana) |
+| **Social** | Authority (derived) | Charisma | Reputation (derived) |
+
+Authority and Reputation are derived from relationship patterns, not stored directly.
+
+---
+
+## Actions & Skills (7 Actions, 23+2 Skills)
+
+Each action has 3 strategic approaches: Direct / Leveraged / Structured.
+
+| Action | Direct | Leveraged | Structured |
+|---|---|---|---|
+| MOVE | Athletics | Riding | Travel |
+| MODIFY | Operate | Equipment | Crafting |
+| ATTACK | Melee | Ranged | Traps |
+| DEFENSE | Active Defense | Armor | Tactics |
+| TRANSFER | Gathering | Trade | Administration |
+| INFLUENCE | Persuasion | Authority | Intrigue |
+| SENSE | Search | Observation | Research |
+
+**Meta-skills (2):** Stealth (reduces detection), Awareness (improves detection).
+
+**Universal action signature:**
+```
+ACTION(target, method, [objects], intensity, secrecy)
+```
+
+**Trade-offs:**
+- High intensity penalizes stealth
+- High stealth reduces effectiveness
+- High awareness reduces task focus
+
+---
+
+## Drives (7)
+
+```
+survival: 0-100      // safety, basic needs
+luxury: 0-100        // comfort, fine goods
+dominance: 0-100     // control, authority
+belonging: 0-100     // relationships, community
+knowledge: 0-100     // learning, discovery
+lawful: 0-100        // 0=chaotic, 50=neutral, 100=lawful
+moral: 0-100         // 0=evil, 50=neutral, 100=good
+```
+
+Character flaws emerge from drive imbalances (high survival + low moral = cowardice). No explicit flaw system.
+
+---
+
+## Relationships (4-Axis)
+
+```
+Relationship {
+    target: EntityRef,
+    debt: -100..+100,         // obligation balance
+    reputation: -100..+100,   // fear\u2194respect
+    affection: -100..+100,    // hate\u2194love
+    familiarity: 0-100,       // interaction history
+}
+```
+
+Any entity \u2192 any entity: individual\u2194individual, individual\u2194group, group\u2194group. Asymmetric. High familiarity = personal relationship dominates inherited group relationship.
+
+**Derived:**
+```
+Authority = (debt + abs(reputation) + affection) / 3
+```
+
+---
+
+## Unified Tree Architecture
+
+### Node Structure
+
+Every entity \u2014 individual or group \u2014 is a node in a single tree. Same struct at every depth.
+
+```
+Node {
+    weight: u32,                   // how many entities this represents
+    stats: StatBlock {
+        location: LocationStat,    // tile coord, region, distribution, or zone
+        health: f32,
+        mood: f32,
+        attributes: [f32; 9],
+        skills: [f32; 23],
+        drives: [f32; 7],
+    },
+    relationships: [Relationship],
+    inventory: Inventory,
+    knowledge: [KnowledgeEntry],
+    factions: [FactionMembership],
+    disguise: Disguise?,
+    home_group: NodeRef?,          // for reintegration after split/promote
+    template: TemplateRef,         // race/job behavioral defaults (inheritance)
+    children: [Node]?,
+}
+```
+
+**weight=1**: leaf, exact values, individual.
+**weight>1**: compound, aggregate values, group.
+
+### Location at Variable Granularity
+
+```
+// Unsplit compound:
+stats.location = Distribution {
+    "goldenhaven.homes": 0.6,
+    "goldenhaven.fields": 0.25,
+    "goldenhaven.market": 0.1,
+    "travel.nearby": 0.05,
+}
+
+// Split children:
+child_A (weight=48): location = Region("goldenhaven.homes")
+child_B (weight=20): location = Region("goldenhaven.fields")
+
+// Leaf individual:
+location = Tile(347, 891)
+```
+
+### Split / Merge
+
+No fixed subgroup count. Tree splits into arbitrary children when variance exceeds threshold.
+
+| Trigger | Action |
+|---|---|
+| Stat variance > split_threshold | Split into children, each inherits parent stats + delta |
+| Child similarity < merge_threshold | Coarsen children back into parent |
+| Story relevance | Promote individual to leaf (weight=1) |
+| Relevance lost | Reintegrate if divergence low |
+
+**Home group reference**: split children and promoted individuals keep `home_group` pointing to their

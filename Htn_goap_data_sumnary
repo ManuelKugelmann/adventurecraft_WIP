@@ -1,0 +1,263 @@
+# World Simulation Rules
+
+## Time-Scale Independence
+
+Every rule is a rate or probability per unit time. The evaluator multiplies by dt.
+
+```
+// Continuous accumulation
+field.growth += fertility * 0.1          // per day
+// dt=1:  growth += fertility * 0.1
+// dt=30: growth += fertility * 3.0
+
+// Stochastic event
+chance(0.02, effect)                     // probability per day
+// dt=1:  roll p = 0.02
+// dt=30: roll p = 1-(1-0.02)^30 = 0.455
+```
+
+### Batch Modes
+
+```
+Accumulate(rate * dt)                         // deterministic continuous
+BernoulliOnce(1 - (1-p)^dt)                   // did event fire?
+PoissonCount(p * dt)                           // how many times in window?
+GeometricTime(-ln(1-p))                        // schedule next occurrence
+NormalApprox(mean = rate*dt, var = var*dt)      // CLT for large dt
+```
+
+### Time-to-Threshold (skip ticks entirely)
+
+```
+remaining = threshold - current
+t_deterministic = remaining / rate
+t_stochastic ~ InverseGaussian(mean = remaining/rate, shape = remaining²/variance)
+// Single roll → exact time the threshold is crossed
+```
+
+### Adaptive Timescale
+
+```
+Combat / player-observed:   dt = minutes
+Local settlement:           dt = 1 day
+Off-screen peacetime:       dt = 30 days
+World gen / history:        dt = 1 year
+```
+
+Same rules, same evaluator, different dt.
+
+---
+
+## Layer 0 — Physics
+
+No agency. Pure state transitions on world matter.
+
+```
+# Temperature
+region.temperature  += region.latitude_heat * world.season_modifier     | region.exposed_sky > 0
+region.temperature  += (adj.temperature - region.temperature) * edge(region, adj, adjacent).conductivity | edge(region, adj, adjacent)
+region.temperature  -= region.altitude * 0.006
+
+# Water cycle
+region.water        -= region.temperature * 0.05                        | region.water > 0
+region.water        += chance(region.humidity * 0.01, 30)               | region.humidity > 70
+adj.water           += (region.water - region.capacity) * edge.flow_rate | region.water > region.capacity AND edge(region, adj, adjacent)
+region.ice          += region.water * 0.1                               | region.temperature < 0 AND region.water > 0
+region.water        += region.ice * 0.1                                 | region.temperature > 0 AND region.ice > 0
+
+# Light
+region.light         = sun_curve(world.time, region.latitude)
+region.light         = 0                                                | region.depth > 0
+
+# Fire
+adj.fire            += chance(region.fire * adj.flammability * 0.01, 20) | region.fire > 0 AND edge(region, adj, adjacent)
+region.fuel         -= region.fire * 0.1                                | region.fire > 0
+region.fire         -= max(1, region.water * 0.5)                       | region.fire > 0
+region.fire         -= 20                                               | region.fire > 0 AND region.fuel <= 0
+
+# Terrain / geology
+region.soil         -= region.water_flow * 0.01                         | region.water_flow > 0
+deposit             => destroy                                          | deposit.amount <= 0
+resource.amount     += region.fertility * 0.05                          | resource.type == renewable
+
+# Soil
+field.fertility     -= 0.03                                             | field.cultivated
+field.fertility     += 0.01                                             | NOT field.cultivated AND region.water > 20
+region.fertility    += region.organic_waste * 0.01                      | region.organic_waste > 0
+region.organic_waste -= 1                                               | region.organic_waste > 0
+
+# Loose matter
+rock.velocity       -= gravity * drag                                   | rock.velocity != 0
+corpse.decay        += region.temperature * 0.05                        | corpse.decay < 100
+corpse              => create(organic_waste, {region})                  | corpse.decay >= 100
+corpse              => destroy                                          | corpse.decay >= 100
+raw_material.condition -= region.water * 0.01                           | raw_material.exposed AND raw_material.has(Degradable)
+```
+
+---
+
+## Layer 1 — Biology
+
+Builds on L0 (temperature, water, light). Passive processes on living things.
+
+```
+# Plants
+plant.growth        += region.light * region.fertility * 0.001          | plant.alive AND region.light > 20 AND region.water > 10
+plant.hydration     -= region.temperature * 0.05                        | plant.alive
+plant.health        -= 5                                                | plant.hydration < 10
+plant               => destroy                                          | plant.health <= 0
+adj_region          => chance(0.01, create(plant, {template: plant.template})) | plant.growth >= 100
+plant.dormant        = true                                             | region.temperature < plant.frost_tolerance
+plant.dormant        = false                                            | plant.dormant AND region.temperature > plant.frost_tolerance
+
+# Metabolism
+e.hunger            += e.attributes.physical * 0.1                      | e.alive
+e.thirst            += e.attributes.physical * 0.15                     | e.alive
+e.fatigue           += 4                                                | e.alive AND NOT e.resting
+e.health            -= 5                                                | e.hunger > 90
+e.health            -= 10                                               | e.thirst > 90
+e.health            += e.attributes.body * 0.05                         | e.health < 100 AND e.hunger < 50 AND e.resting
+e.health            -= e.wounds                                         | e.wounds > 0
+e.wounds            -= 0.5                                              | e.wounds > 0
+e.age               += 1                                                | e.alive    # per year
+e.attributes.physical -= 1                                              | e.age > e.template.lifespan * 0.8    # per year
+e                   => destroy                                          | e.health <= 0
+
+# Disease
+e.infected           = chance(e.wounds * (1 - region.hygiene * 0.01) * 0.05, true) | e.wounds > 0 AND region.hygiene < 50
+co_located          => chance(region.population * region.density * 0.001, infect)   | e.infected
+e.health            -= 3                                                | e.infected
+e.infected           = chance(e.attributes.body * 0.01, false)          | e.infected AND e.attributes.body > 30
+```
+
+---
+
+## Layer 2 — Items
+
+Passive processes on objects (natural and crafted). No agency.
+
+```
+# Condition / decay
+item.condition      -= max(0.1, item.location.temperature * 0.05)       | item.has(Perishable)
+item.condition      -= item.location.humidity * 0.01                     | item.has(Material(iron))
+item.condition      -= item.use_rate * 0.01                              | item.equipped AND item.in_use
+item                => destroy                                           | item.condition <= 0
+
+# Structures (built things)
+structure.condition -= 0.01 * (1 + region.water * 0.01)                 | structure.exposed_sky > 0
+structure.condition -= (structure.load - structure.capacity) * 0.1       | structure.load > structure.capacity
+structure           => destroy                                           | structure.condition <= 0
+
+# Consumables
+fuel.amount         -= region.fire * 0.1                                | fuel.in_use
+light_source.fuel   -= 1                                                | light_source.lit
+light_source.lit     = false                                            | light_source.fuel <= 0
+```
+
+---
+
+## Layer 3 — Basic Behavior
+
+First layer with agency. Reactive, single-step. Drives + needs → atomic action.
+
+```
+# Survival needs
+e => GATHER(food) or CONSUME(food)              | e.hunger > 60
+e => MOVE_TO(water), CONSUME(water)             | e.thirst > 60
+e => MOVE_TO(shelter), REST                     | e.fatigue > 70
+e => FLEE(threat)                               | e.health < 30 OR region.threat_level > e.skills.defend * 2
+e => MOVE_TO(warm_region)                       | region.temperature < e.cold_tolerance
+e => MOVE_TO(shelter), HOLD_POSITION            | region.weather == storm
+
+# Possession
+e => STORE(food, e.home)                        | e.drives.survival > 70 AND e.inventory.food > 0
+e => INTIMIDATE(intruder) or ATTACK(intruder)   | e.drives.dominance > 60 AND intruder.location == e.home
+
+# Basic social
+e => MOVE_TO(nearest_group), RECRUIT(self)      | e.drives.belonging > 60 AND NOT edge(e, *, member_of)
+e => TRANSFER(food, child)                      | edge(e, child, parent_of) AND child.hunger > 50
+e => COMMUNICATE(group, threat)                 | region.threat_level > 70
+
+# Mood (passive, no agency)
+e.mood              -= 3                        | e.hunger > 50
+e.mood              += 1                        | e.housing_quality > 50
+e.mood              -= 2                        | region.population > region.capacity
+e.mood              -= region.threat_level * 0.05 | region.threat_level > 50
+e.mood              -= 5                        | e.drives[X] > 70 AND e.fulfillment[X] < 30
+e.mood              += 2                        | e.mood < 50 AND e.hunger < 30 AND e.health > 70
+```
+
+---
+
+## Layer 4 — Complex Behavior
+
+Goal-directed, multi-step. Requires knowledge, planning, social reasoning.
+
+```
+# Economic
+e => plan(SECURE_SUPPLY, {resource: food})       | world.season == autumn AND e.inventory.food < e.group.size * 90
+e => plan(TRADE_ROUTE, {good, partner})          | e.inventory[good] > e.demand[good] * 2 AND edge(e, partner, social).affection > 0
+e => TRADE(good, inflated_price)                 | market.supply[good] < market.demand[good] * 0.5 AND e.inventory[good] > 0
+e => CRAFT(better_equipment)                     | e.skills.modify > e.equipment.quality * 1.5
+
+# Military
+e => plan(ASSEMBLE_FORCE, {location: region})    | region.threat_level > 50 AND region.garrison < region.threat_level
+e => plan(RAID, {target: enemy})                 | edge(e, enemy, social).affection < -50 AND e.military > enemy.military * 1.3
+e => plan(SIEGE, {target})                       | target.value > siege_cost AND e.military > target.garrison * 3
+e => plan(RETREAT) or plan(NEGOTIATE)            | e.military < enemy.military * 0.5
+
+# Political
+e => plan(ALLIANCE, {target})                    | edge(e, target, social).affection > 30 AND threat.military > e.military
+e => plan(SUBVERSION, {target})                  | edge(e, target, social).affection < -30 AND e.skills.influence > 50
+e => plan(COUP)                                  | e.drives.dominance > 70 AND region.authority_strength < e.military
+e => create(authority_claim, {delegate, scope})  | e.responsibilities > e.capacity
+
+# Knowledge
+e => SCOUT(target_region)                        | e.knowledge[target_region].confidence < 30 AND e.drives.knowledge > 50
+e => RESEARCH(domain) or seek TEACH              | goal requires skill > current
+e => SPY(target)                                 | edge(e, target, social).affection < -20 AND e.knowledge[target.plans].confidence < 40
+e => SCOUT(assumption.subject)                   | plan.confidence < 0.5 AND plan.assumptions.stale > 0
+e => select(counters_for(enemy_plan))            | e.knowledge[enemy.plan] exists
+
+# Social
+e => NEGOTIATE(supplier, terms)                  | e.need[resource] > 50 AND edge(e, supplier, social).familiarity > 30
+e => INTIMIDATE(violator) or apply_penalties     | edge(e, violator, contract).status == breached AND e.authority_over(violator) > 0
+e => DECEIVE(target, false_info)                 | e.drives.dominance > e.drives.moral AND goal.blocked
+
+# Authority (passive)
+claim.sources.force      = holder.military_in(region)        | edge(holder, region, controls)
+claim.sources.consensus  = edge(holder, region.population, social, *, sum).affection / region.population | edge(holder, region, controls)
+claim.sources.tradition += edge(holder, region.population, social, *, sum).familiarity * 0.01 | edge(holder, region, controls)
+region.unrest           += 5                                 | region.avg_mood < 25 AND region.authority_strength < 40
+region                  => create(rebel_faction)             | region.unrest > 90
+
+# Group dynamics
+group.variance          += 5                                 | group.mood < 30
+settlement.population   += chance(0.14, 1)                   | settlement.avg_mood > 80 AND settlement.housing > settlement.population
+settlement.population   -= chance(0.14, 1)                   | settlement.avg_mood < 30
+
+# Relationships (passive)
+edge(a, b, social).familiarity += 1              | a.location == b.location
+edge(a, b, social).familiarity -= 1              | a.location != b.location
+edge(a, b, social).affection   *= 0.99           | edge(a, b, social).familiarity < 30
+edge(a, b, social).affection   -= 1              | edge(a, b, social).debt > 50
+
+# Knowledge (passive)
+vitem => copy_to(nearby, confidence * 0.8)       | vitem.obscurity < 0.3 AND co_located
+vitem.freshness         -= 0.05
+vitem.obscurity         -= vitem.copy_count * 0.02
+```
+
+---
+
+## Layer Dependency
+
+```
+L0 Physics     → nothing
+L1 Biology     → L0 (temperature, water, light)
+L2 Items       → L0 (temperature, humidity, weather)
+L3 Basic       → L0, L1, L2 + drives
+L4 Complex     → all above + knowledge + plans
+```
+
+No circular dependencies between layers. Higher layers fire less often and over larger dt — where probabilistic batching pays off most.

@@ -1,0 +1,225 @@
+# Unified Grouping: Visible vs Background Stats
+
+## The Final Generalization
+
+Every node in the tree â€” regardless of depth â€” carries the same stat block structure. A leaf representing one person has the same fields as a compound representing 10,000. The only difference is precision: a leaf's values are exact, a compound's are aggregates.
+
+This means location, equipment, and identity aren't separate hierarchies. They're just dimensions in the same stat block, at whatever granularity the node exists at.
+
+```
+Node {
+    weight: u32                    // how many entities this represents
+    
+    // ALL stats live here, at this node's granularity
+    stats: StatBlock {
+        location:    LocationStat  // exact coord, or region, or zone, or "somewhere"
+        health:      f32           // exact, or average
+        mood:        f32
+        skills:      f32[N]
+        equipment:   EquipStat     // specific item, or tier, or "armed/unarmed"
+        action:      ActionStat    // specific task, or role category
+        appearance:  AppearStat    // specific look, or species template
+        name:        NameStat      // specific name, or unnamed
+        // ... every dimension the simulation cares about
+    }
+    
+    children: Node[]?
+    variance: f32                  // how spread the children are
+}
+```
+
+A weight=1 leaf: location is a tile coordinate, equipment is a specific sword, name is "Urist McHammer".
+
+A weight=200 compound: location is a region ID, equipment is "iron tier", name is unnamed.
+
+A weight=5000 compound: location is a zone ID, equipment is "mixed", name is unnamed.
+
+Same struct. Different precision. The tree depth determines how much you know.
+
+---
+
+## The Display Problem
+
+The simulation is happy working at coarse granularity. But the **renderer** needs individual positions, appearances, and animations for every visible entity. You can't draw "200 miners in the mine region" â€” you need 200 sprites at 200 positions.
+
+This forces a split between two kinds of state:
+
+**Background stats** â€” what the simulation needs. Mood, health, skills, production rates, needs fulfillment. These change on simulation ticks (maybe once per game-second). They can live at any tree depth. They are the *truth*.
+
+**Visible stats** â€” what the renderer needs. Position, facing, animation frame, equipped item appearance, clothing color. These change every render frame. They must exist per visible instance. They are *presentation*.
+
+The crucial insight: visible stats don't need to be *simulated*. They can be **derived** from background stats at display time. A miner's position doesn't come from pathfinding simulation â€” it comes from "this entity belongs to a node whose location is mine_region, so place it somewhere plausible within that region."
+
+---
+
+## Architecture: Shells and Cores
+
+Every visible entity is a **Shell** â€” a lightweight rendering proxy. It reads its background state from whatever tree node it's attached to (its **Core**).
+
+```
+Core (tree node):
+    weight: 200
+    stats.location: Region(MINE_3)
+    stats.equipment: Tier(IRON)
+    stats.action: Role(MINING)
+    stats.health: 0.85
+    stats.mood: 0.6
+    stats.appearance: Species(DONDORIAN)
+
+Shell (rendering proxy, one per visible individual):
+    core_ref â†’ points to the Core above
+    pixel_position: Vec2          // derived: random point within MINE_3
+    animation: AnimState          // derived: mining animation
+    sprite_variant: u8            // derived: dondorian miner sprite + iron pickaxe
+    facing: Direction             // derived: toward nearest rock face
+    wobble: f32                   // cosmetic noise
+```
+
+200 shells, one core. The shells are ~16 bytes each (position, anim state, sprite variant). The core is ~200 bytes with full simulation state. Total: 200Ã—16 + 200 = 3,400 bytes instead of 200Ã—2,000 = 400,000 bytes for full individual simulation.
+
+### Shell Lifecycle
+
+Shells exist only for **visible** entities. Off-screen nodes have zero shells â€” they're pure cores. When the viewport scrolls over a region, shells spawn. When it scrolls away, shells despawn. The core persists regardless.
+
+```
+Camera moves to reveal MINE_3:
+    Core(MINE_3 miners) has 200 weight, 0 shells
+    â†’ spawn 200 shells
+    â†’ each shell picks a position within MINE_3 bounds
+    â†’ each shell picks a sprite variant from species + equipment tier
+    â†’ shells animate independently (staggered phases for visual variety)
+
+Camera moves away from MINE_3:
+    â†’ despawn all 200 shells
+    â†’ Core unchanged, simulation continues
+```
+
+This is the same LOD principle as before, but now explicitly separated into simulation (core) and presentation (shell).
+
+### Shell Derivation Rules
+
+Each visible stat has a derivation rule from background stats:
+
+| Visible stat | Derived from | Method |
+|---|---|---|
+| Position | core.stats.location | Random point within region bounds, biased toward workplace furniture. Persistent per-shell (don't re-randomize every frame). Slowly drifts to simulate wandering. |
+| Animation | core.stats.action | Action role maps to animation set. Phase offset randomized per shell. Speed scaled by core.stats.skills (skilled miners swing faster). |
+| Sprite | core.stats.appearance + equipment | Species template + equipment tier â†’ sprite sheet selection. Variant index from shell ID for visual diversity. |
+| Facing | position + workplace geometry | Face toward work target (rock face, anvil, crop row). |
+| Health overlay | core.stats.health | If core health < threshold, some fraction of shells get injury overlay (limp, bandage). Fraction = 1.0 - core.health. Which specific shells get it is random but stable. |
+| Mood indicator | core.stats.mood | Thought bubble or posture change on fraction of shells near break threshold. |
+
+The shells don't need to be accurate about *which* individual is wounded â€” just that the right *proportion* looks wounded. The player sees "some miners are limping" which correctly communicates "this group's health is 0.6."
+
+---
+
+## Location and Items as Stat Dimensions
+
+With this model, location and inventory don't need separate trees. They're just stat fields that exist at whatever granularity the core node exists at.
+
+### Location Granularity Levels
+
+```
+weight=5000:  stats.location = Zone(INDUSTRIAL)        // "they're somewhere in the industrial district"
+weight=200:   stats.location = Region(MINE_3)           // "they're in mine 3"
+weight=1:     stats.location = Tile(347, 891)           // "they're at this exact tile"
+```
+
+The simulation only needs to know "these 200 miners are in MINE_3" for production calculations. The renderer needs per-shell positions, but those are derived, not simulated.
+
+Pathfinding between locations happens at the appropriate granularity: a weight=200 group "moves" by changing its location stat from Region(MINE_3) to Region(BARRACKS_1). The shells smoothly walk there visually, but the simulation just flips a field.
+
+If an individual needs actual pathfinding (player-directed movement, fleeing combat, chasing a criminal), that node refines to a leaf and gets true tile-level position as a simulated stat rather than a derived one.
+
+### Equipment Granularity Levels
+
+```
+weight=5000:  stats.equipment = Category(ARMED)         // "they have weapons"
+weight=200:   stats.equipment = Tier(IRON_WEAPONS)      // "they have iron-tier weapons"
+weight=20:    stats.equipment = SubTier(IRON_SWORDS, quality=0.7)  // "iron swords, decent quality"
+weight=1:     stats.equipment = Specific(item_id=48832) // "this exact named sword"
+```
+
+An individual item with history (artifact, quest item) is just an equipment stat that has been refined to leaf depth. The "item tree" from earlier designs doesn't exist as a separate structure â€” it's the equipment dimension of population nodes, at whatever depth those nodes exist at.
+
+Inventory storage (warehouse stockpiles) works the same way: a warehouse node has weight=5000 representing 5000 swords, with equipment stat at Tier granularity. Refining it creates children at SubTier or Specific granularity. The "stockpile slot" from earlier is just a node at tier depth.
+
+---
+
+## What Changes When a Core Refines
+
+When a core node refines (gains children), nothing about the shells needs to change immediately. The shells were already derived from the parent's stats. They can continue deriving from the parent's stats â€” which is now the weighted combination of the children â€” and get the same values.
+
+Over subsequent frames, shells can lazily reassign to child cores for more accurate derivation. Or not, if the children's stats are close enough.
+
+When a core coarsens (children collapse), the shells that were attached to children simply re-attach to the parent. Again, no visible pop because the parent's summary equals the weighted combination.
+
+This means **tree restructuring is invisible to the renderer**. The shells see a continuous field of stats, regardless of how the tree behind them is organized. Refinement and coarsening are purely simulation-side decisions.
+
+---
+
+## The Two Tick Loops
+
+The system runs two independent loops at different rates:
+
+### Simulation Tick (1â€“10 Hz, game-time)
+
+Walks the core tree. At each node:
+- Update background stats (production, consumption, decay, needs)
+- Check variance against thresholds â†’ refine or coarsen
+- Propagate dirty summaries upward
+- Generate stochastic events (scaled by weight)
+- Process events â†’ refine targeted subtrees
+
+Cost: O(number of core nodes). Typically ~100â€“500 nodes regardless of population.
+
+### Render Tick (30â€“60 Hz, real-time)
+
+For each visible core (cores whose location overlaps the viewport):
+- Ensure shells exist (spawn if just became visible, despawn if left)
+- Update shell positions (drift, animation advance)
+- Derive visual state from core stats (health overlays, mood indicators)
+- Draw shells
+
+Cost: O(number of visible shells). Typically ~500â€“2000 depending on zoom level and population density.
+
+The two loops don't share mutable state. The render tick reads core stats (read-only). The simulation tick never touches shells. This makes them trivially parallelizable.
+
+---
+
+## Edge Cases
+
+### Individual Pawn the Player Is Tracking
+
+Player clicks on a shell. That shell's core needs to refine to leaf depth so the player can see individual stats (name, specific mood modifiers, relationships, exact equipment). The core refines, the shell re-attaches to the leaf core, and the UI shows full detail.
+
+When the player deselects, the leaf core doesn't immediately coarsen â€” it stays refined with a TTL, in case the player clicks again. After the TTL, it coarsens back.
+
+### Visible Combat
+
+During a battle in the viewport, the renderer wants to show individual fighting. Cores in the combat zone refine deeper (not necessarily to leaf â€” maybe to weight=5â€“10 sub-squads). Shells animate combat using the sub-squad's stats: the "front line" sub-squad shells swing weapons, the "archer" sub-squad shells fire arrows. Individual kill animations are cosmetic â€” a shell "dies" when its sub-squad's weight decrements.
+
+The player sees individual soldiers fighting and dying, but the simulation is resolving combat at sub-squad granularity. Only named heroes refine to leaf.
+
+### Off-Screen Events
+
+A battle happens off-screen. No shells exist. The simulation resolves it entirely at compound granularity â€” maybe 4â€“6 nodes total. Results propagate as stat changes (weight decremented by casualties, health decreased, morale shifted). When the player scrolls to the aftermath, shells spawn showing the new state: fewer entities, some with injury overlays.
+
+---
+
+## Summary
+
+| Concept | Implementation |
+|---|---|
+| Entity | Core node at any depth |
+| Individual | Core node at leaf depth (weight=1) |
+| Group | Core node at compound depth (weight>1) |
+| Position | Stat dimension, simulated at core's depth, rendered per-shell |
+| Equipment | Stat dimension, simulated at core's depth, rendered per-shell |
+| Rendering | Shells derived from core stats, exist only when visible |
+| Tree depth | Determined by simulation need + player attention, not by entity type |
+| Separate trees per domain | Eliminated â€” one tree, location/equipment/identity are stat dimensions |
+| Simulation cost | O(core nodes), independent of population |
+| Render cost | O(visible shells), independent of simulation depth |
+
+One tree. One node type. One stat block. Two tick loops. Everything else is policy.

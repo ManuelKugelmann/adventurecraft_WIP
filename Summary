@@ -1,0 +1,386 @@
+# Contract System
+
+## Base Contract Structure
+```javascript
+CONTRACT_TEMPLATE = {
+  contract_id: "unique_identifier",
+  type: "employment|trade|quest|service",
+  status: "pending|active|completed|breached|cancelled",
+  
+  parties: {
+    party_a: "actor_id_1",
+    party_b: "actor_id_2"  // can be "self" for personal goals
+  },
+  
+  obligations: {
+    party_a_owes: {
+      items: {"item_type": quantity},
+      actions: {"action_type": {"times_per_period": number, "duration_minutes": number}}
+    },
+    party_b_owes: {
+      items: {"item_type": quantity}, 
+      actions: {"action_type": {"times_per_period": number, "duration_minutes": number}}
+    }
+  },
+  
+  penalties: {
+    party_a_breach: {
+      items: {"item_type": quantity},
+      actions: {"action_type": {"times_per_period": number, "duration_minutes": number}}
+    },
+    party_b_breach: {
+      items: {"item_type": quantity},
+      actions: {"action_type": {"times_per_period": number, "duration_minutes": number}}
+    }
+  },
+  
+  execution: {
+    frequency: "daily|weekly|monthly|one_time",
+    duration_days: number,
+    completion_conditions: ["condition_1", "condition_2"],
+    renewal_automatic: true|false
+  },
+  
+  created_date: "day_number",
+  expires_date: "day_number"
+}
+```
+
+## Employment Contracts
+
+### Guard Employment
+```javascript
+GUARD_CONTRACT = {
+  contract_id: "guard_thomas_001",
+  type: "employment",
+  status: "active",
+  
+  parties: {
+    party_a: "lord_blackwood",    // employer
+    party_b: "guard_thomas"       // employee
+  },
+  
+  obligations: {
+    party_a_owes: {
+      items: {"gold_coins": 3, "sword": 1, "uniform": 1, "rations": 1},
+      actions: {"provide_lodging": {"times_per_period": 1, "duration_minutes": 480}}
+    },
+    party_b_owes: {
+      actions: {"patrol_walls": {"times_per_period": 4, "duration_minutes": 120}, "check_gates": {"times_per_period": 6, "duration_minutes": 10}, "report_incidents": {"times_per_period": 1, "duration_minutes": 30}}
+    }
+  },
+  
+  penalties: {
+    party_a_breach: {
+      items: {"gold_coins": 50, "compensation_goods": 1}
+    },
+    party_b_breach: {
+      items: {"gold_coins": 30, "uniform": 1, "weapons": 1},
+      actions: {"transfer_items": {"times_per_period": 1, "duration_minutes": 60}}
+    }
+  },
+  
+  execution: {
+    frequency: "daily",
+    duration_days: 365,
+    completion_conditions: ["contract_expires", "either_party_terminates"],
+    renewal_automatic: false
+  },
+  
+  created_date: "day_120",
+  expires_date: "day_485"
+}
+```
+
+### Kitchen Staff Employment
+```javascript
+COOK_CONTRACT = {
+  contract_id: "cook_mary_003",
+  type: "employment", 
+  status: "active",
+  
+  parties: {
+    party_a: "castle_kitchen",
+    party_b: "cook_mary"
+  },
+  
+  obligations: {
+    party_a_owes: {
+      items: {"gold_coins": 4, "ingredients": 10, "kitchen_tools": 1},
+      actions: {"provide_lodging": {"times_per_period": 1, "duration_minutes": 480}}
+    },
+    party_b_owes: {
+      actions: {"cook_food": {"times_per_period": 3, "duration_minutes": 60}, "manage_supplies": {"times_per_period": 1, "duration_minutes": 30}}
+    }
+  },
+  
+  penalties: {
+    party_a_breach: {
+      items: {"gold_coins": 60, "kitchen_equipment": 1}
+    },
+    party_b_breach: {
+      items: {"gold_coins": 40, "kitchen_tools": 1},
+      actions: {"cook_food": {"times_per_period": 3, "duration_minutes": 120}}
+    }
+  },
+  
+  execution: {
+    frequency: "daily",
+    duration_days: 180,
+    completion_conditions: ["contract_expires"],
+    renewal_automatic: true
+  },
+  
+  created_date: "day_200",
+  expires_date: "day_380"
+}
+```
+
+## Trade Contracts
+
+### Food Supply Agreement
+```javascript
+FOOD_SUPPLY_CONTRACT = {
+  contract_id: "merchant_guild_food_001",
+  type: "trade",
+  status: "active",
+  
+  parties: {
+    party_a: "merchant_guild",
+    party_b: "castle_kitchen"
+  },
+  
+  obligations: {
+    party_a_owes: {
+      items: {"grain": 20, "meat": 10, "vegetables": 15},
+      actions: {"travel_to_location": {"times_per_period": 1, "duration_minutes": 120}}
+    },
+    party_b_owes: {
+      items: {"gold_coins": 100}
+    }
+  },
+  
+  penalties: {
+    party_a_breach: {
+      items: {"gold_coins": 25, "grain": 5},
+      actions: {"travel_to_location": {"times_per_period": 1, "duration_minutes": 180}}
+    },
+    party_b_breach: {
+      items: {"gold_coins": 50, "trade_goods": 2}
+    }
+  },
+  
+  execution: {
+    frequency: "weekly",
+    duration_days: 360,
+    completion_conditions: ["contract_expires", "either_party_cancels"],
+    renewal_automatic: true
+  },
+  
+  created_date: "day_50",
+  expires_date: "day_410"
+}
+```
+
+### Weapon Commission
+```javascript
+WEAPON_COMMISSION_CONTRACT = {
+  contract_id: "blacksmith_sword_007",
+  type: "trade",
+  status: "pending",
+  
+  parties: {
+    party_a: "blacksmith_erik",
+    party_b: "knight_roland"
+  },
+  
+  obligations: {
+    party_a_owes: {
+      items: {"masterwork_sword": 1},
+      actions: {"craft_item": {"times_per_period": 1, "duration_minutes": 2400}}
+    },
+    party_b_owes: {
+      items: {"gold_coins": 300, "rare_steel": 2}
+    }
+  },
+  
+  penalties: {
+    party_a_breach: {
+      items: {"gold_coins": 200, "masterwork_tools": 1},
+      actions: {"craft_item": {"times_per_period": 1, "duration_minutes": 2400}}
+    },
+    party_b_breach: {
+      items: {"gold_coins": 150, "collateral": 1}
+    }
+  },
+  
+  execution: {
+    frequency: "one_time",
+    duration_days: 30,
+    completion_conditions: ["item_delivered", "payment_received"],
+    renewal_automatic: false
+  },
+  
+  created_date: "day_180",
+  expires_date: "day_210"
+}
+```
+
+## Service Contracts
+
+### Mercenary Hire
+```javascript
+MERCENARY_CONTRACT = {
+  contract_id: "sellsword_company_002", 
+  type: "service",
+  status: "active",
+  
+  parties: {
+    party_a: "sellsword_company",
+    party_b: "lord_blackwood"
+  },
+  
+  obligations: {
+    party_a_owes: {
+      actions: {"guard_location": {"times_per_period": 1, "duration_minutes": 1440}, "patrol_area": {"times_per_period": 2, "duration_minutes": 180}, "attack_targets": {"times_per_period": 10, "duration_minutes": 60}}
+    },
+    party_b_owes: {
+      items: {"gold_coins": 50, "weapons": 10, "armor": 10, "rations": 20},
+      actions: {"provide_lodging": {"times_per_period": 1, "duration_minutes": 480}}
+    }
+  },
+  
+  penalties: {
+    party_a_breach: {
+      items: {"gold_coins": 200, "weapons": 5, "armor": 5},
+      actions: {"transfer_items": {"times_per_period": 1, "duration_minutes": 240}}
+    },
+    party_b_breach: {
+      items: {"gold_coins": 300, "weapons": 5}
+    }
+  },
+  
+  execution: {
+    frequency: "daily",
+    duration_days: 90,
+    completion_conditions: ["contract_expires", "conflict_resolved", "either_party_terminates"],
+    renewal_automatic: false
+  },
+  
+  created_date: "day_300",
+  expires_date: "day_390"
+}
+```
+
+## Quest/Goal Contracts (Self-Imposed)
+
+### Personal Skill Development
+```javascript
+SKILL_QUEST_CONTRACT = {
+  contract_id: "thomas_swordmastery_001",
+  type: "quest",
+  status: "active",
+  
+  parties: {
+    party_a: "guard_thomas",
+    party_b: "self"
+  },
+  
+  obligations: {
+    party_a_owes: {
+      items: {"gold_coins": 100, "practice_time": 2},
+      actions: {"practice_skill": {"times_per_period": 1, "duration_minutes": 120}, "learn_from_teacher": {"times_per_period": 2, "duration_minutes": 60}}
+    },
+    party_b_owes: {
+      items: {"skill_improvement": 1}
+    }
+  },
+  
+  penalties: {
+    party_a_breach: {
+      items: {"gold_coins": 20, "practice_equipment": 1},
+      actions: {"practice_skill": {"times_per_period": 5, "duration_minutes": 60}}
+    },
+    party_b_breach: {}
+  },
+  
+  execution: {
+    frequency: "daily",
+    duration_days: 120,
+    completion_conditions: ["inventory.skills.swordsmanship >= 70"],
+    renewal_automatic: false
+  },
+  
+  created_date: "day_150",
+  expires_date: "day_270"
+}
+```
+
+### Adventurer Mission Goal
+```javascript
+HEIST_QUEST_CONTRACT = {
+  contract_id: "team_vault_heist_001",
+  type: "quest", 
+  status: "active",
+  
+  parties: {
+    party_a: "adventurer_team",
+    party_b: "self"
+  },
+  
+  obligations: {
+    party_a_owes: {
+      items: {"gold_coins": 500, "preparation_time": 30},
+      actions: {"gather_information": {"times_per_period": 10, "duration_minutes": 180}, "acquire_tools": {"times_per_period": 5, "duration_minutes": 120}, "infiltrate_location": {"times_per_period": 1, "duration_minutes": 480}}
+    },
+    party_b_owes: {
+      items: {"vault_artifact": 1}
+    }
+  },
+  
+  penalties: {
+    party_a_breach: {
+      items: {"gold_coins": 200, "equipment": 1},
+      actions: {"transfer_items": {"times_per_period": 1, "duration_minutes": 120}}
+    },
+    party_b_breach: {}
+  },
+  
+  execution: {
+    frequency: "one_time",
+    duration_days: 60,
+    completion_conditions: ["inventory.items.vault_artifact >= 1", "location.current.distance_from_castle >= 100"],
+    renewal_automatic: false
+  },
+  
+  created_date: "day_100",
+  expires_date: "day_160"
+}
+```
+
+## Contract Status Management
+
+### Daily Contract Processing
+```javascript
+DAILY_CONTRACT_EVALUATION = {
+  for_each_active_contract: {
+    check_obligations: "verify_items_delivered && verify_actions_performed",
+    apply_benefits: "transfer_items && schedule_required_actions",
+    track_action_completion: "count_times_performed && measure_duration_minutes",
+    update_progress: "increment_days_completed",
+    check_completion: "evaluate_completion_conditions",
+    check_expiration: "compare_current_date_to_expires_date",
+    handle_breaches: "apply_penalties_if_obligations_unmet"
+  },
+  
+  action_tracking: {
+    daily_actions: "verify_times_per_period_completed",
+    duration_verification: "confirm_minimum_duration_minutes_spent",
+    quality_assessment: "evaluate_action_effectiveness_rating"
+  },
+  
+  breach_handling: {
+    immediate_penalties: "transfer_penalty_items && schedule_penalty_actions"
+  }
+}
+```

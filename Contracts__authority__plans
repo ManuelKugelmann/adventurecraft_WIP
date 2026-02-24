@@ -1,0 +1,562 @@
+# Plans
+
+## Jobs Are Templates
+
+Jobs are not hardcoded behavior lists â€” they're **templates** instantiated with local context. A job template defines prioritized rules; the instance binds them to a specific workplace, shift, and resources.
+
+### Job Template
+
+```
+JobTemplate {
+    id: JobId
+    domain: Domain                          // which skill this uses
+    rules: PriorityRule[]                   // ordered behavior rules
+    required_structures: StructureType[]    // what must exist at workplace
+    required_tools: ItemType[]?             // optional equipment
+    shift_pattern: ShiftPattern             // when active
+    compatible_with: JobId[]                // can be held alongside
+}
+
+PriorityRule {
+    priority: u8                            // lower = more urgent
+    condition: Condition                    // when to fire
+    action: ActionId                        // what to do (atomic or compound)
+    scope: Local | Regional | Global        // how far to look for work
+}
+```
+
+### Example Templates
+
+```
+JobTemplate: Miner
+    domain: Mining
+    required_structures: [MINE]
+    required_tools: [PICKAXE]
+    shift_pattern: DAY_SHIFT
+    compatible_with: [Militia, Hauler]
+    rules:
+        1: if tools.durability < 0.1         â†’ REPAIR_TOOLS        [local]
+        2: if mine.has(ore) AND carrying < max â†’ MINE               [local]
+        3: if carrying(ore)                   â†’ HAUL(to: SMELTER)   [regional]
+        4: if mine.blocked                    â†’ CLEAR_RUBBLE        [local]
+        5: if idle                            â†’ MAINTAIN_MINE       [local]
+
+JobTemplate: Farmer
+    domain: Farming
+    required_structures: [FIELD]
+    shift_pattern: SEASONAL(grow_season=ACTIVE, off_season=REDUCED)
+    compatible_with: [Herbalist, Hauler, Militia]
+    rules:
+        1: if field.ready_to_harvest          â†’ HARVEST             [local]
+        2: if field.needs_planting AND season  â†’ PLANT              [local]
+        3: if field.needs_tending              â†’ TEND_CROPS          [local]
+        4: if harvest_stored(local) > 0        â†’ HAUL(to: GRANARY)  [regional]
+        5: if idle AND off_season              â†’ defer_to(Herbalist) [â€”]
+
+JobTemplate: Guard
+    domain: Combat
+    required_structures: [GUARD_POST, GATE, WALL]
+    shift_pattern: ROTATING_WATCH
+    compatible_with: [Trainer]
+    rules:
+        1: if alert_level â‰¥ CRITICAL          â†’ COMBAT_STATIONS     [regional]
+        2: if threat_in(patrol_route)          â†’ ENGAGE              [local]
+        3: if post_assigned                    â†’ PATROL(route)       [local]
+        4: if idle AND skill < threshold       â†’ TRAIN(Combat)       [local]
+        5: if idle                             â†’ HOLD_POSITION       [local]
+
+JobTemplate: Smith
+    domain: Metallurgy
+    required_structures: [FORGE]
+    required_tools: [HAMMER, TONGS]
+    shift_pattern: DAY_SHIFT
+    compatible_with: [Merchant]
+    rules:
+        1: if order_queue.has(priority_order)  â†’ CRAFT(order)        [local]
+        2: if raw_materials.available           â†’ CRAFT(next_recipe)  [local]
+        3: if tools.durability < 0.2           â†’ REPAIR_TOOLS        [local]
+        4: if forge.needs_fuel                  â†’ HAUL(FUEL, to: FORGE) [regional]
+        5: if finished_goods.stockpiled         â†’ HAUL(to: WAREHOUSE) [regional]
+
+JobTemplate: Scholar
+    domain: Research
+    required_structures: [LIBRARY, LABORATORY]
+    shift_pattern: DAY_SHIFT
+    compatible_with: [Teacher]
+    rules:
+        1: if active_research_project           â†’ RESEARCH(project)  [local]
+        2: if library.has(unread_texts)          â†’ STUDY              [local]
+        3: if idle                               â†’ WRITE(findings)    [local]
+
+JobTemplate: Merchant
+    domain: Trade
+    required_structures: [MARKET, DEPOT]
+    shift_pattern: MARKET_HOURS
+    compatible_with: [Smith, Hauler]
+    rules:
+        1: if trader_arrived                    â†’ NEGOTIATE(trader)   [local]
+        2: if export_ready                      â†’ HAUL(to: DEPOT)    [regional]
+        3: if import_arrived                    â†’ HAUL(to: WAREHOUSE) [regional]
+        4: if idle                              â†’ APPRAISE_GOODS     [local]
+
+JobTemplate: Healer
+    domain: Medicine
+    required_structures: [INFIRMARY]
+    required_tools: [MEDICAL_KIT]
+    shift_pattern: ALWAYS_ON
+    compatible_with: [Herbalist]
+    rules:
+        1: if patient.critical                  â†’ TREAT(patient)     [regional]
+        2: if patient.wounded                   â†’ TREAT(patient)     [local]
+        3: if supplies.low                      â†’ CRAFT(medicine)    [local]
+        4: if idle                              â†’ TRAIN(Medicine)    [local]
+
+JobTemplate: Scout
+    domain: Perception
+    required_structures: []                   // no workplace â€” field role
+    shift_pattern: MISSION_BASED
+    compatible_with: [Hunter]
+    rules:
+        1: if mission_assigned                  â†’ SCOUT(target_region) [global]
+        2: if threat_detected                   â†’ REPORT(to: LEADER)  [global]
+        3: if returning                         â†’ MOVE_TO(home)       [global]
+        4: if idle                              â†’ PATROL(perimeter)   [regional]
+```
+
+### Job Instantiation
+
+A template becomes a job instance when bound to a specific workplace and entity/group:
+
+```
+JobInstance {
+    template: JobTemplateId
+    workplace: RegionRef               // where this job operates
+    holder: NodeRef                    // who has this job
+    shift: ShiftSchedule               // concrete times derived from pattern
+    local_overrides: PriorityRule[]?   // player or leader can add/reorder rules
+}
+```
+
+A group of 200 miners at Mine 3 shares one JobInstance. The rules evaluate against Mine 3's world state. A different mining group at Mine 7 has a different instance of the same template, evaluating against Mine 7.
+
+### Multiple Jobs
+
+An entity holds multiple job instances, each with its own shift or activation context:
+
+```
+Entity stats.jobs: [
+    JobInstance(Farmer, EAST_FIELDS, shift=GROWING_SEASON),
+    JobInstance(Militia, NORTH_GATE, shift=EVENING_WATCH),
+    JobInstance(Herbalist, FOREST_EDGE, shift=OFF_SEASON),
+]
+```
+
+Resolution:
+1. Active plan step (if any) overrides everything
+2. Highest-priority rule across all **currently active** jobs wins
+3. If no rule fires across any active job â†’ default idle behavior
+
+The shift pattern determines which jobs are "active" at any given time. A farmer-militia member runs farming rules during the day, guard rules during evening watch. No conflict resolution needed â€” shifts don't overlap.
+
+When shifts do overlap (emergency: alert_level â‰¥ CRITICAL), rule priority resolves it. The guard template's COMBAT_STATIONS at priority 1 beats the farmer template's HARVEST at priority 1 because alert-level rules carry implicit emergency escalation.
+
+### Template Inheritance
+
+Specialized jobs can extend base templates:
+
+```
+JobTemplate: MasterSmith extends Smith
+    additional_rules:
+        0: if apprentice.present               â†’ TEACH(apprentice)  [local]
+    override_rules:
+        2: if raw_materials.available           â†’ CRAFT(masterwork_recipe) [local]
+    min_skill: Metallurgy â‰¥ 4
+
+JobTemplate: Spy extends Scout
+    additional_rules:
+        1: if infiltrated(target_faction)       â†’ SPY(target)        [local]
+        2: if cover_blown                       â†’ FLEE(home)         [global]
+    required_skills: [Perception â‰¥ 3, Deception â‰¥ 3]
+```
+
+### Template Library
+
+The game ships with a template library. Templates are data, not code â€” moddable, extensible. New templates can be defined for:
+- Mod-added professions
+- Culture-specific roles (temple priest, gladiator, court poet)
+- Player-created specializations (assign custom rule priorities to a new "role")
+
+Leaders and faction policies can create or modify templates: "All miners also haul on Fridays" = add a rule to the Miner template for this faction.
+
+---
+
+## Atomic Actions (Bottom Up)
+
+The smallest units of behavior. Everything decomposes to these:
+
+### Movement
+```
+MOVE_TO(region)              // travel to a region
+FOLLOW(target)               // stay near a moving target
+FLEE(threat)                 // move away from threat
+HOLD_POSITION                // stay put
+```
+
+### Resource
+```
+GATHER(resource, source)     // extract from world
+CRAFT(recipe)                // transform inputs to outputs
+CONSUME(item)                // eat, drink, use up
+STORE(item, location)        // place in stockpile
+HAUL(item, from, to)         // move item between locations
+TRADE(give, receive, with)   // exchange with another entity
+```
+
+### Social
+```
+COMMUNICATE(target, info)    // transfer virtual item or signal
+TEACH(target, skill/v-item)  // raise skill or copy virtual item
+RECRUIT(target, faction)     // attempt to add to group
+INTIMIDATE(target)           // lower target morale
+NEGOTIATE(target, terms)     // propose deal
+DECEIVE(target, false_info)  // plant false virtual item
+```
+
+### Combat
+```
+ATTACK(target)               // deal damage
+DEFEND(position)             // fortify and hold
+AMBUSH(location)             // hidden attack on arrival
+RETREAT(direction)           // orderly withdrawal
+SABOTAGE(target_structure)   // damage building/equipment
+```
+
+### Information
+```
+SCOUT(region)                // gain virtual items about remote area
+SPY(target_group)            // gain virtual items about target's state/plans
+HIDE(self_or_item)           // increase obscurity
+REVEAL(info, audience)       // decrease obscurity of a virtual item
+RESEARCH(domain)             // attempt to discover new rules/facts
+```
+
+### State
+```
+REST                         // recover stamina/health
+TRAIN(skill)                 // increase skill level
+BUILD(blueprint, location)   // construct structure
+REPAIR(target)               // restore durability
+WAIT(condition)              // idle until condition met
+```
+
+These are the leaf level. Every plan ultimately decomposes into sequences and conditions over these.
+
+---
+
+## Templates (Top Down)
+
+Common strategic patterns. Each is a reusable plan skeleton with slots for specifics:
+
+### Military
+
+```
+Template: RAID
+    goal: weaken target without holding territory
+    steps:
+        1. SCOUT(target_region)                      â†’ gain intelligence
+        2. MOVE_TO(staging_area) [force â‰¥ threshold]  â†’ assemble
+        3. MOVE_TO(target_region) [stealth if possible]
+        4. ATTACK(target) OR SABOTAGE(target_structure)
+        5. RETREAT(home) [before reinforcements]
+    counters: PATROL, AMBUSH_DEFENSE, FORTIFY
+
+Template: SIEGE
+    goal: take fortified position
+    steps:
+        1. SCOUT(fortress)                           â†’ find weaknesses
+        2. MOVE_TO(perimeter) [force â‰¥ 3Ã— garrison]
+        3. HOLD_POSITION [cut supply lines]          â†’ starve
+        4. BUILD(siege_equipment) [if walls strong]
+        5. ATTACK(weakest_point) OR WAIT(surrender)
+    counters: SORTIE, RELIEF_FORCE, SCORCHED_EARTH
+
+Template: AMBUSH_DEFENSE
+    goal: destroy attacking force using terrain
+    steps:
+        1. SCOUT(approaches)                         â†’ identify chokepoints
+        2. MOVE_TO(hidden_positions) [along route]
+        3. WAIT(enemy enters kill zone)
+        4. ATTACK(target) [from concealment]
+        5. PURSUE OR HOLD_POSITION
+    counters: SCOUT_AHEAD, FLANKING_ADVANCE
+```
+
+### Economic
+
+```
+Template: TRADE_ROUTE
+    goal: establish recurring exchange with remote faction
+    steps:
+        1. SCOUT(destination)                        â†’ verify demand
+        2. NEGOTIATE(target_faction, terms)
+        3. HAUL(goods, home, destination) [recurring]
+        4. TRADE(give, receive, target)
+        5. HAUL(goods, destination, home) [recurring]
+    failure: RENEGOTIATE | FIND_ALTERNATE_PARTNER
+
+Template: RESOURCE_EXPANSION
+    goal: secure new resource source
+    steps:
+        1. SCOUT(candidate_regions)                  â†’ find resource
+        2. CLAIM(region)                             â†’ establish control
+        3. BUILD(extraction_structure)
+        4. RECRUIT(workers) OR REASSIGN(existing)
+        5. ESTABLISH job rules for new site
+    failure: TRADE_FOR_RESOURCE | SUBSTITUTE_RESOURCE
+
+Template: MONOPOLY
+    goal: control supply of a resource
+    steps:
+        1. SCOUT(all_sources)                        â†’ map competition
+        2. ACQUIRE(sources) [buy/conquer/negotiate exclusive access]
+        3. RESTRICT(supply) [raise prices]
+        4. DEFEND(sources) [prevent competition]
+    counters: FIND_ALTERNATE_SOURCE, DEVELOP_SUBSTITUTE
+```
+
+### Political
+
+```
+Template: ALLIANCE
+    goal: mutual defense/trade pact
+    steps:
+        1. SCOUT(candidate)                          â†’ assess strength, disposition
+        2. COMMUNICATE(candidate, proposal)
+        3. NEGOTIATE(candidate, terms)
+        4. COMMIT(shared obligations)
+    failure: SEEK_OTHER_ALLY | STRENGTHEN_SELF
+
+Template: SUBVERSION
+    goal: weaken rival from within
+    steps:
+        1. SPY(target_faction)                       â†’ find discontented groups
+        2. COMMUNICATE(discontented, promises)        â†’ recruit sympathizers
+        3. DECEIVE(target_leader, false_info)         â†’ misdirect
+        4. WAIT(internal_crisis) OR SABOTAGE(key_resource)
+        5. EXPLOIT(weakened state)
+    counters: COUNTER_INTELLIGENCE, PURGE, REFORM
+
+Template: COUP
+    goal: replace faction leadership
+    steps:
+        1. RECRUIT(key_subordinates)                 â†’ build support base
+        2. HIDE(conspiracy)                          â†’ maintain obscurity
+        3. WAIT(leader_vulnerable OR support â‰¥ threshold)
+        4. SEIZE(leadership_assets) [sudden]
+        5. COMMUNICATE(faction, new_order)            â†’ legitimize
+    counters: PURGE, EXILE_RIVALS, DISTRIBUTE_POWER
+```
+
+### Survival
+
+```
+Template: FAMINE_RESPONSE
+    goal: survive food shortage
+    steps:
+        1. RATION(food_supply)                       â†’ extend reserves
+        2. SCOUT(alternate_sources)                  â†’ forage, hunt, trade
+        3. TRADE(luxury_goods, food, any_willing)    â†’ buy food at premium
+        4. MIGRATE(fertile_region) [if all else fails]
+    escalation: each step triggers only if prior insufficient
+
+Template: EPIDEMIC_RESPONSE
+    goal: contain disease spread
+    steps:
+        1. ISOLATE(infected_group)                   â†’ quarantine region
+        2. RESEARCH(cure) [if Medicine skill sufficient]
+        3. TRADE_FOR(medicine, any_source)
+        4. COMMUNICATE(population, hygiene_rules)
+        5. WAIT(epidemic_subsides) OR MIGRATE(uninfected)
+```
+
+---
+
+## Filling the Gap: Compound Actions
+
+Between templates and atomics, compound actions provide the middle layers. Each decomposes one level down:
+
+```
+Depth 0 â€” Template:    SIEGE(fortress)
+Depth 1 â€” Phase:       ASSEMBLE_FORCE, CUT_SUPPLY, BREACH_WALLS, OCCUPY
+Depth 2 â€” Task:        RECRUIT(soldiers), MOVE_TO(staging), BUILD(siege_tower)
+Depth 3 â€” Atomic:      GATHER(wood), CRAFT(siege_components), HAUL(to_site)
+```
+
+Compound actions are not a fixed set â€” they're generated by decomposing templates given current world state. The decomposition is a lookup:
+
+```
+CompoundAction {
+    name: ActionId
+    preconditions: Condition[]       // what must be true to start
+    decomposition: Step[]            // ordered sub-actions (compound or atomic)
+    completion: Condition[]          // what must be true to consider this done
+    failure: Condition[]             // what means this has failed
+}
+```
+
+Some standard compounds:
+
+```
+ASSEMBLE_FORCE(target_strength, location):
+    precondition: available_military â‰¥ target_strength Ã— 0.5
+    decompose:
+        RECRUIT(shortfall) [if available < target]
+        TRAIN(recruits) [if avg_skill < threshold]
+        MOVE_TO(location) [all units]
+    complete: force_at(location) â‰¥ target_strength
+    failure: available_military < target_strength Ã— 0.3
+
+ESTABLISH_OUTPOST(region):
+    precondition: region.unclaimed OR region.claimable
+    decompose:
+        SCOUT(region)
+        MOVE_TO(region) [settler group]
+        BUILD(basic_shelter)
+        BUILD(stockpile)
+        ESTABLISH(job_rules for region)
+    complete: region.has(shelter) AND region.has(workers)
+
+SECURE_SUPPLY(resource):
+    precondition: resource.supply < resource.demand
+    decompose:
+        option A: RESOURCE_EXPANSION(resource)    [if source exists]
+        option B: TRADE_ROUTE(resource)           [if trade partner exists]
+        option C: RESEARCH(substitute)            [if tech sufficient]
+    complete: resource.supply â‰¥ resource.demand
+    // options tried in order of estimated cost
+```
+
+### Decomposition Depth Matches Tree Depth
+
+A faction-level node doesn't decompose past depth 1-2. "Siege the fortress" becomes "assemble force, cut supply, breach, occupy" â€” four compound sub-actions assigned to subordinate groups. Those groups decompose further only if they're refined enough to need it.
+
+A cohort-level node decomposes to depth 2-3. "Assemble force" becomes "recruit, train, march."
+
+Atomic actions only appear at leaf level, and only for promoted solo entities.
+
+This mirrors the existing tree: plan granularity = node granularity. No entity holds a plan more detailed than its own depth in the tree.
+
+---
+
+## Plan Object
+
+A plan is a virtual item (as established in the knowledge system) containing:
+
+```
+VirtualItem(Plan) {
+    mirrors: GOAL_STATE
+    stats: {
+        template: TemplateId              // which template this instantiates (if any)
+        goal: Condition[]                 // desired end state
+        steps: Step[]                     // current decomposition level
+        current_step: usize               // progress pointer
+        assumptions: VirtualItem[]        // knowledge the plan depends on
+        assigned_to: NodeRef[]            // who's executing each step
+        priority: f32
+        obscurity: f32                    // how secret this plan is
+    }
+}
+
+Step {
+    action: ActionId                      // atomic or compound
+    actor: NodeRef                        // who does this (can be a group)
+    preconditions: Condition[]
+    status: Pending | Active | Complete | Failed | Skipped
+    substeps: Step[]?                     // decomposition (populated on demand)
+}
+```
+
+Steps decompose lazily. A faction creates a plan with 4 high-level steps. When step 2 becomes Active and is assigned to a cohort, that cohort decomposes it into 3 sub-steps. When a sub-step is assigned to a promoted individual, it decomposes to atomics. Unused branches never decompose.
+
+---
+
+## Conditions
+
+Conditions mirror the action hierarchy â€” they can be high-level or atomic:
+
+### Atomic Conditions
+```
+HAS(entity, item/resource, amount)        // inventory check
+AT(entity, region)                         // location check
+SKILL_GE(entity, domain, level)            // skill threshold
+STAT_CMP(entity, stat, op, value)          // generic stat comparison
+ALIVE(entity)                              // existence check
+CONNECTED(region_a, region_b)              // path exists
+VISIBLE(fact, to_entity)                   // knowledge check (skill or v-item)
+CONTROLS(faction, region)                  // political check
+```
+
+### Compound Conditions
+```
+STRONGER_THAN(faction_a, faction_b):
+    STAT_CMP(a.military, >, b.military Ã— 1.2)
+
+SUPPLY_SECURE(faction, resource):
+    HAS(faction, resource, â‰¥ demand Ã— 2)
+    OR TRADE_ROUTE_ACTIVE(faction, resource)
+
+VULNERABLE(target):
+    STAT_CMP(target.garrison, <, target.region.threat_level)
+    OR STAT_CMP(target.morale, <, 0.3)
+    OR NOT CONNECTED(target, target.allies)
+```
+
+Compound conditions decompose the same way compound actions do â€” they're shorthand evaluated against world state. High-level plans use compound conditions; they resolve to atomics only if needed for evaluation at lower tree depths.
+
+---
+
+## Counters
+
+Every template lists its counters. When a faction detects an enemy plan (via virtual items from scouting/espionage), the counter-plan lookup is immediate:
+
+```
+detected: enemy is executing SIEGE
+    â†’ counter options: SORTIE, RELIEF_FORCE, SCORCHED_EARTH
+    â†’ select based on: current strength, ally availability, resource state
+    â†’ instantiate counter template with current specifics
+```
+
+Counter selection is itself a skill check. A leader with Tactics â‰¥ 3 considers all counters. Tactics â‰¥ 1 might only see the obvious one. This uses the same on-demand skill check mechanism â€” no stored knowledge of counters needed unless the counter is unusual (virtual item for a novel tactic).
+
+---
+
+## Job-Plan Interaction
+
+Plans exist only for **non-routine activity**: strategic decisions, novel situations, multi-step goals that cross job boundaries. Plans override job templates temporarily:
+
+```
+priority resolution:
+    1. Active plan step (if assigned and preconditions met)
+    2. Highest-priority rule across active job instances
+    3. Default idle behavior
+```
+
+When the plan completes or the entity's step is done, they fall back to job behavior automatically. No explicit "return to normal" action needed.
+
+Multiple plans can be active. Priority between plans resolves like priority between jobs â€” highest priority wins, with the understanding that most entities have at most one active plan step at any time (the rest are on other groups).
+
+---
+
+## Summary
+
+```
+Routine behavior:     job templates (data-driven reactive rules, covers 95% of activity)
+Job binding:          template + workplace + holder + shift = instance
+Multiple jobs:        shift patterns determine which are active, priority resolves conflicts
+Non-routine behavior: plan templates (template â†’ compound â†’ atomic decomposition)
+Knowledge of plans:   virtual items (can be scouted, stolen, shared, stale)
+Counter-planning:     template lookup + skill check for selection
+Decomposition depth:  matches tree depth (faction=phases, cohort=tasks, solo=atomics)
+Decomposition timing: lazy (only when a step becomes active at a specific node)
+Templates are data:   moddable, extensible, inheritable
+```

@@ -1,0 +1,220 @@
+# Object System
+
+## Single Object Type
+
+No polymorphic inheritance. One struct, composable traits.
+
+```
+Object {
+    id: ObjectId,
+    template: TemplateId,          // base properties lookup
+    traits: [Trait],               // composable modifiers
+    condition: f32,                // 0-100
+    quantity: u32,                 // stackable
+    owner: EntityRef?,             // legal claim
+    holder: EntityRef?,            // physical possession
+    location: LocationRef,
+    secrecy: f32,
+
+    crafted: CraftedInfo?,         // null for natural objects
+}
+
+CraftedInfo {
+    creator: EntityRef,
+    quality: f32,                  // skill at time of creation
+    materials: [MaterialRef],      // inputs → affect traits
+    recipe: TemplateId,
+}
+```
+
+---
+
+## Traits
+
+Flat composable tags with optional payload. No hierarchy.
+
+```
+Trait =
+    | Perishable(rate: f32)
+    | Flammable(ignition: f32, fuel_value: f32)
+    | Edible(nutrition: f32, taste: f32)
+    | Weapon(damage: f32, speed: f32, range: f32)
+    | Armor(protection: f32, encumbrance: f32)
+    | Tool(domain: Domain, bonus: f32)
+    | Container(capacity: f32)
+    | Liquid(viscosity: f32)
+    | Heavy(weight: f32)
+    | Fragile(break_threshold: f32)
+    | Valuable(base_price: f32)
+    | Degradable(rate: f32)
+    | Magical(effect: EffectId, charge: f32)
+    | Concealed(bonus: f32)
+    | Stackable(max: u32)
+    | Material(type: MaterialType)
+    | Poisonous(potency: f32)
+    | LightSource(brightness: f32, fuel_rate: f32)
+    ...
+```
+
+### Examples
+
+```
+iron_sword:   [Weapon(12, 1.0, 1), Heavy(3), Material(iron), Degradable(0.01), Valuable(50)]
+raw_log:      [Flammable(0.3, 80), Heavy(20), Material(wood), Degradable(0.05)]
+cooked_steak: [Perishable(0.1), Edible(40, 70), Flammable(0.6, 5)]
+gold_ring:    [Valuable(200), Heavy(0.1), Material(gold)]
+torch:        [LightSource(0.7, 1.0), Flammable(0.8, 20), Heavy(1), Weapon(3, 0.8, 1)]
+healing_herb: [Edible(5, 20), Perishable(0.3), Magical(heal, 10)]
+```
+
+Masterwork iron sword: same traits but `crafted.quality = 95` scales `Weapon(16, 1.1, 1)`.
+
+### Rules Reference Traits Directly
+
+```
+item.condition -= item.trait(Perishable).rate * item.location.temperature * 0.05 | item.has(Perishable)
+item.condition -= item.location.humidity * 0.01                                  | item.has(Material(iron))
+item           => ignite                                                          | item.has(Flammable) AND region.fire > item.trait(Flammable).ignition
+region.light   += item.trait(LightSource).brightness                              | item.has(LightSource) AND item.lit
+```
+
+No type checks, no inheritance casts. Just `has(Trait)` and `trait(T).field`.
+
+---
+
+## Material Composition Through Crafting
+
+Material traits propagate from inputs. Recipe defines which traits carry forward and how they combine.
+
+```
+CRAFT(iron_sword, materials: [iron_ingot, wood_handle])
+=> object gets:
+   Material(iron)          // from iron_ingot
+   Flammable(0.1, 5)      // from wood_handle, reduced — mostly metal
+   crafted.materials = [iron, wood]
+```
+
+A steel sword vs iron sword differs because the input material contributes different trait payloads.
+
+---
+
+## Owner vs Holder
+
+```
+| Situation              | Owner          | Holder          |
+|------------------------|----------------|-----------------|
+| Own hammer             | blacksmith     | blacksmith      |
+| Stolen sword           | original_owner | thief           |
+| Rented workshop        | landlord       | tenant          |
+| Lent horse             | lender         | borrower        |
+| Abandoned loot         | null           | null            |
+| Carried message        | sender         | courier         |
+| Warehouse goods        | merchant       | warehouse_keeper|
+| Commissioned WIP       | knight         | blacksmith      |
+```
+
+Owner = social/legal claim (backed by authority, contracts, consensus).
+Holder = physical fact.
+
+Theft = changing holder without owner's consent.
+Recovery = making holder match owner.
+Dispute = competing owner claims → authority system resolves.
+
+Applies to spatial nodes too: rented room owned by landlord, held by tenant.
+
+---
+
+## Implicit → Explicit Materialization
+
+Regions carry bulk resource stats. Objects only materialize when interacted with.
+
+```
+region.trees = 500          // implicit
+region.stone = 2000         // implicit
+region.iron_ore = 300       // implicit
+
+// GATHER(trees):
+region.trees -= 1
+=> create(object, {template: log, traits: [Flammable, Heavy, Material(wood)]})
+// Now explicit — can be hauled, stored, crafted, burned
+```
+
+Same for mining, butchering, harvesting. Region stat decrements, object materializes. Until then, no per-item tracking cost.
+
+---
+
+## Bulk Groups
+
+Fungible objects stored as aggregate stats. Same structure everywhere — backpack, spatial node, cart.
+
+```
+BulkGroup {
+    template: ObjectTemplateId,
+    quantity: u32,
+    avg_condition: f32,
+    avg_quality: f32,
+}
+```
+
+A kitchen spatial node:
+```
+contents: [
+    {template: "tools.cooking",     quantity: 5, avg_condition: 70, avg_quality: 0.5},
+    {template: "furniture.kitchen", quantity: 3, avg_condition: 80, avg_quality: 0.6},
+    {template: "fuel.firewood",     quantity: 20, avg_condition: 90, avg_quality: 1.0},
+]
+special_items: [enchanted_cleaver_42]   // materialized individual objects
+```
+
+### Materialize On Demand
+
+Objects extracted from bulk groups when:
+- Player inspects
+- Theft/looting
+- Specific item becomes story-relevant
+- Individual item condition drops to breakage
+- Trade/transfer of specific items
+
+```
+// Theft from kitchen:
+room.contents["tools.cooking"].quantity -= 1
+=> create(object, {template: "tools.cooking", quality: sample(avg_quality), owner: room.owner, holder: thief})
+// One explicit object, rest stay bulk
+```
+
+### Bulk Wear (batched, no individual tracking)
+
+```
+room.contents[X].avg_condition -= wear_rate     | room.in_use
+room.contents[X].quantity -= 1                  | chance(breakage_rate(avg_condition))
+```
+
+---
+
+## Room Templates
+
+Define starting bulk groups for spatial nodes. Just data — no special type.
+
+```toml
+[meta]
+id = "kitchen"
+tags = ["cooking", "storage.food"]
+required_for = ["CRAFT(food_recipe)"]
+
+[[contents]]
+template = "tools.cooking"
+quantity = 5
+quality_range = [0.3, 0.8]
+
+[[contents]]
+template = "furniture.kitchen"
+quantity = 3
+quality_range = [0.4, 0.8]
+
+[[contents]]
+template = "fuel.firewood"
+quantity = 20
+quality_range = [0.8, 1.0]
+```
+
+Room quality scales quality ranges. Poor kitchen: `[0.1, 0.4]`. Rich kitchen: `[0.6, 0.95]`. Better tools → better action bonuses → better results.

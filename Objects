@@ -1,0 +1,87 @@
+# Colony Sim Mechanics & Implementation: DF vs RimWorld vs Songs of Syx
+
+## Technical Foundation
+
+| Aspect | Dwarf Fortress | RimWorld | Songs of Syx |
+|---|---|---|---|
+| **Language** | C/C++ ("unsanctioned messy combination") | C# | Java (1.8, runs on JDK 21) |
+| **Engine** | Custom, SDL for rendering | Unity (2019.4+), custom object/time systems | Custom ("Snake2D"), LWJGL 3.x + OpenGL |
+| **Codebase** | ~711K lines, single developer (Tarn Adams) | Single primary developer (Tynan Sylvester) | Single developer (Jake/Gamatron) |
+| **Dev Start** | 2002 (full-time since 2006) | 2013 Kickstarter | 2015, Steam EA 2020 |
+| **Mod API** | DFHack (external), Steam Workshop | C# DLL injection against `Assembly-CSharp.dll` | Java mods compiled against game JARs (Maven build) |
+| **Scale Target** | ~200 dwarves, deep per-entity simulation | ~20 colonists, narrative depth | 10,000+ citizens, macro-scale |
+
+## Core Architecture Differences
+
+**Dwarf Fortress** prioritizes simulation depth per entity. Every dwarf has ~50 personality facets, ~30 intellectual values, individual body parts with tissue layers, muscles, blood vessels, and nerves. The world generation simulates geology (fractal elevation, rainfall, drainage, temperature, salinity) â†’ biome classification â†’ erosion â†’ rivers â†’ flora/fauna â†’ civilization history spanning centuries. The item system moved away from polymorphic class hierarchies toward a flexible "tool" archetype after Tarn found deep inheritance too rigid for a 20-year project. Pathfinding and fluid dynamics operate on full 3D z-levels. Single-threaded; the CPU bottleneck is the simulation, not rendering.
+
+**RimWorld** prioritizes narrative generation through constrained systems. The "AI Storyteller" is not actually AI â€” it's a scheduled event generator with configurable curves (Cassandra = rising tension, Phoebe = relaxed pacing, Randy = uniform random). Event selection is parameterized by colony wealth, population count, recent deaths, and time since last major event. Tynan built custom object pooling and tick-based time systems on top of Unity because Unity's default ECS is designed for hundreds of smooth-space 3D objects, not thousands of tile-based 2D entities. Pawns actively scan for available work (pull model) rather than a centralized job board (push model), which makes auto-labor optimization fundamentally difficult.
+
+**Songs of Syx** prioritizes population scale. Individual simulation is lighter (per-species happiness aggregates rather than per-citizen mood), which allows the population to reach tens of thousands while maintaining interactive frame rates. The custom Java/LWJGL engine is specifically optimized for this tile-based mass simulation. The game bundles its own JRE, avoiding dependency issues.
+
+## Simulation Systems Comparison
+
+### Population & Needs
+
+**DF**: Per-dwarf needs: hunger, thirst, sleep, social, alcohol, specific preferences (favorite gem, favorite food), stress from witnessing death/rain/lack of tables. Personality based on NEO PI-R traits affects mood modifiers, social skill learning, combat bravery/cowardice. Emotional cascades can spiral into fortress-destroying tantrum spirals.
+
+**RimWorld**: Per-pawn mood system with stacking positive/negative modifiers (ate without table -3, impressive bedroom +5, witnessed death -8, etc.). Traits are binary/ternary (Pyromaniac, Iron-Willed, Lazy). Mental breaks trigger at low mood thresholds: berserk, food binge, wandering, insulting sprees. Needs: food, rest, comfort, beauty, recreation (with specific types: social, solitary, dexterity, etc.).
+
+**SoS**: Per-species aggregate fulfillment across 7 categories: food (with per-species preferences), drink, housing, furniture, clothing, entertainment, religion. Happiness > 80% enables immigration; low happiness â†’ emigration or riots. Slave submission is a separate parallel system. Per-species racial traits fundamentally alter labor efficiency, combat ability, and social dynamics (e.g., Cantors are giant warrior-judges who hate humans; Gimmies are cannibalistic bug-people).
+
+### Economy & Production
+
+**DF**: Extremely granular material simulation. Every item has material properties (density, melting point, shear strength). Steel requires iron + flux + fuel â€” no "steel ore." Workshops are individual stations; dwarves claim tasks and execute them. Trade caravans arrive seasonally. No global price system; barter-based.
+
+**RimWorld**: Bill-based production system at workbenches. Materials have quality tiers. Colonist skill affects output quality (awful â†’ legendary). Trade caravans + orbital traders with fluctuating prices. Drop-on-floor optimization is a key player technique for throughput.
+
+**SoS**: Factory-scale production chains with interconnected logistics. Dynamic market pricing that responds to supply/demand. Import/export depots for specific goods. Research requires ongoing labor (tech can degrade without maintenance). Economy scales from village barter to imperial taxation.
+
+### Combat
+
+**DF**: Per-body-part damage model with individual tissue layers. Attacks target specific body parts. Material properties of weapons and armor matter (silver warhammer > silver sword due to density). Morale simulation with routing. Traps can be constructed from mechanical logic (pressure plates, levers, repeaters). Wrestling subsystem.
+
+**RimWorld**: Cover-based tactical combat inspired by Jagged Alliance 2. Hit chance calculation: distance + skill + weapon stats + lighting + angle + cover. AI performs flanking, avoids bunching, uses cover. Turrets and traps (single-use spike traps). Weapons have detailed stats (warmup, cooldown, accuracy curves per range).
+
+**SoS**: Mass-scale real-time battles with up to 50,000 individual units. Formation-based with player control over positioning and maneuvers. Morale and routing simulation. Army composition drawn from actual citizens (economic cost of warfare). Equipment quality matters. Auto-resolve available but unreliable.
+
+### World Generation
+
+**DF**: The deepest procgen in gaming. Fractal elevation â†’ layered field simulation (temperature, rainfall, drainage, vegetation, salinity) â†’ biome classification â†’ erosion â†’ river tracing â†’ flora/fauna placement â†’ civilization simulation over centuries â†’ wars, artifacts, legends, named historical figures. Rain shadow algorithm for realistic desert placement. Full Legends mode to browse generated history.
+
+**RimWorld**: Planet generation with biomes, factions, and road networks. Individual maps are relatively small tiles. World is mostly static backdrop; the story happens at map scale. Faction relations evolve during gameplay.
+
+**SoS**: World map with multiple realms, trade routes, and diplomacy. Map generation includes terrain, climate, mineral deposits, fertility zones. Strategic layer feeds back into city management (vassals, conquests, resource dependencies). Less historical depth than DF but more strategic interactivity than RimWorld.
+
+### Modding Architecture
+
+**DF**: Historically opaque. DFHack (external memory-patching framework) was the primary mod vector for the classic version. Steam version added Workshop support. RAW files for data modding (creatures, materials, reactions). No official code-level mod API.
+
+**RimWorld**: Extremely moddable. C# DLLs loaded at runtime with Harmony for method patching. XML defs for data (items, recipes, factions, storyteller curves). 10,000+ Steam Workshop mods. The modding community has essentially become a parallel development force. Decompiling `Assembly-CSharp.dll` is standard practice.
+
+**SoS**: Java mods compiled against game classes. Maven build pipeline. Data modding via text files for races, rooms, music, maps, tech. Steam Workshop integration. Modding API is growing but less mature than RimWorld's ecosystem.
+
+## Design Philosophy Summary
+
+| | Dwarf Fortress | RimWorld | Songs of Syx |
+|---|---|---|---|
+| **Core thesis** | Simulate reality at maximum depth | Generate compelling stories | Scale city-state simulation |
+| **Unit count** | ~200, deeply simulated | ~20, narratively rich | 10,000+, statistically modeled |
+| **Failure mode** | Emergent cascade ("losing is fun") | Storyteller-paced drama | Macro-economic/political collapse |
+| **Player role** | Indirect overseer of autonomous agents | Indirect overseer + drafted commander | City planner + grand strategist + general |
+| **Complexity source** | Interlocking simulation systems | Character interactions + events | Scale + logistics + multi-species politics |
+| **Key innovation** | Deepest procgen world ever built | Storyteller-as-difficulty-driver | Mass population sim at interactive framerates |
+
+## Implementation Takeaways
+
+1. **Per-entity depth vs. aggregate statistics** is the fundamental tradeoff. DF simulates 200 entities with 50+ personality facets each; SoS simulates 10,000+ with per-species aggregate happiness. RimWorld sits in between. Pick your scale early â€” it drives every architectural decision.
+
+2. **Pull vs. push job systems**: RimWorld pawns actively scan for work (pull), which makes optimization hard but creates emergent behavior. DF uses a similar model. SoS uses auto-employment with configurable per-building worker counts, trading individual agency for macro throughput.
+
+3. **Event-driven narrative vs. simulation-emergent narrative**: RimWorld's storyteller is essentially a weighted random event scheduler parameterized by game state â€” not ML, not planning AI. DF's stories emerge purely from simulation interactions. SoS's stories emerge from macro-scale political/economic dynamics. All three approaches work; they produce different kinds of stories.
+
+4. **Material simulation depth**: DF models material properties (density, strength, melting point) on every item â€” enabling emergent interactions (magma + copper â‰  magma + iron). RimWorld uses quality tiers. SoS uses resource categories. Depth here directly correlates with CPU cost per item interaction.
+
+5. **Custom engine vs. Unity**: Both DF and SoS built custom engines for their specific needs. RimWorld used Unity but had to replace core object management and time systems. For tile-based mass simulation, general-purpose engines impose overhead that custom solutions avoid. Tynan's FAQ explicitly states Unity is "better suited for smooth-space 3D games with hundreds of objects."
+
+6. **Long-term solo codebase maintenance**: All three are primarily solo-dev projects with 700K+ line codebases. Tarn Adams notes consistent variable naming and comments are essential at that scale. His biggest regret: polymorphic item inheritance â€” favoring composition over inheritance for long-lived, evolving codebases.
