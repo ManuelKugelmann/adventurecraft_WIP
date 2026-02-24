@@ -66,6 +66,12 @@ The same autotuning machinery works in reverse for world-building. Instead of fi
 
 Example: provide a sample map that should be at a stable state. The autotuner adjusts economic rates, resource distributions, population pressures, and authority parameters until the simulation converges to an equilibrium matching the provided map. The result is a world that feels internally consistent because it *is* internally consistent — the rules that generated it are the same rules that will govern it during play.
 
+### LLM-in-the-Loop Tuning
+
+The tuning loop is driven by an LLM comparing simulation output against natural-language descriptions. Rather than requiring hand-coded fitness functions, the autotuner runs a simulation forward, renders the world trajectory into an LLM-readable summary, and asks the model: *does this match the target description?* The LLM scores the fit and suggests which parameters to adjust.
+
+This requires the **world trajectory to be serialized in a form an LLM can understand** — structured natural-language summaries of what happened, who controls what, how resources flowed, what conflicts emerged. This is not a secondary concern; it is a core output format. The same legible trajectory representation that enables LLM-driven autotuning also serves as the backbone for **history generation**: producing readable narratives, chronicles, and event logs directly from simulation state without a separate storytelling layer.
+
 ---
 
 ## Architecture Summary
