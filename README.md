@@ -52,6 +52,22 @@ Swap the skin. The underlying dynamics are the same. A modern logistics firm, a 
 
 ---
 
+## Autotuning
+
+The simulation's rules and parameters are not hand-tuned by guesswork. They are calibrated against data.
+
+### Matching Real-World Trajectories
+
+Real-world application requires **autotuning of rules to match historical or measured trajectories.** Given a known sequence of outcomes — population curves, trade volumes, conflict timelines, supply chain throughputs — the engine adjusts rule parameters until the simulation reproduces the observed trajectory within tolerance. This is what makes the engine a modeling tool rather than a toy: the rules earn their keep by predicting what actually happened, then extrapolating forward.
+
+### Generating Game Worlds with Target Properties
+
+The same autotuning machinery works in reverse for world-building. Instead of fitting to a historical trajectory, you specify **target properties** for a game world — then let the tuner find parameters that produce them.
+
+Example: provide a sample map that should be at a stable state. The autotuner adjusts economic rates, resource distributions, population pressures, and authority parameters until the simulation converges to an equilibrium matching the provided map. The result is a world that feels internally consistent because it *is* internally consistent — the rules that generated it are the same rules that will govern it during play.
+
+---
+
 ## Architecture Summary
 
 The engine is built on a single principle: **store only fundamental state; derive everything else.**
