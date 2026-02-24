@@ -1,5 +1,12 @@
 # AdventureCraft
 
+<!-- TEASER IMAGE — generate with: replicate run black-forest-labs/flux-2-klein-9b-base \
+     --input prompt="<see prompt below>" --input width=1280 --input height=640
+     Prompt: "A vast medieval landscape seen from above, overlaid with glowing network graphs
+     and data flows connecting castles, villages and trade routes, blending simulation
+     aesthetics with historical realism, cinematic lighting, dark atmospheric"
+     Replace this comment block with: ![AdventureCraft teaser](assets/teaser.png) -->
+
 > A deterministic social simulation engine. Models historical dynamics from the ground up. Predicts emergent outcomes in real-world-analogous systems.
 
 ---
