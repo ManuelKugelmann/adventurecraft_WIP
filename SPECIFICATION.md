@@ -1,40 +1,104 @@
-# Claude Memory — AdventureCraft Project
+# AdventureCraft — System Specification
 
-## Purpose & Context
+A simulation-based strategy game engine generating emergent gameplay through composable, data-driven systems. Works across medieval fantasy, sci-fi, and modern settings.
 
-Manu is developing AdventureCraft, a complex simulation-based strategy game focused on emergent gameplay from composable building blocks. The project aims to create a unified framework where individual entities and groups share the same statistical foundation, enabling realistic AI behavior through condition-based planning rather than scripted sequences. The game spans multiple scales from individual tile-level interactions to stellar empire management, designed to work across genres (medieval fantasy, sci-fi, modern) without mechanical gaps.
+---
 
-Core design philosophy emphasizes emergent complexity from simple rules, favoring computed properties over stored state, composition over inheritance, and data-driven templates over hardcoded behavior. Manu consistently pushes for elegant simplifications, fewer abstractions, and unified approaches that avoid data duplication while maintaining computational efficiency for large-scale simulation with vast numbers of actors.
+## Design Principles
 
-## Current State
+- Store only fundamental state. Derive everything else on demand.
+- Emergent complexity from simple composable building blocks.
+- All conditions reference concrete, measurable values. No abstract concepts.
+- Wealth = owned valuables. Reputation = relationship patterns. Authority = derived from sources.
+- Static properties via template hierarchy, not stored per-entity.
+- Composition over inheritance. Data over code.
+- One node type, traits are everything, same rules at every scale.
 
-The foundational systems architecture is well-established, featuring a 9-attribute matrix (Physical/Mental/Social × Power/Coordination/Endurance), 7 universal actions with 3 skill approaches each (totaling 22 skills plus Stealth), and a 4-axis relationship system tracking debt, reputation, affection, and familiarity. The execution layer architecture has been consolidated around a unified Node system where everything from individuals to planets is represented as nodes with trait-based composition, using Q16.16 fixed-point arithmetic and deterministic execution with read-write phase separation.
+---
 
-Recent work has focused on refining the technical implementation, including trait-based object systems, virtual item knowledge frameworks, contract mechanics, and authority systems derived from measurable sources (Force, Delegation, Consensus, Tradition). The system supports both precompiled rules for performance and bytecode-like templates for data-driven balancing, with automatic batch mode derivation for multiscale temporal execution.
+## Architecture — `architecture.md`
 
-## Key Learnings & Principles
+Implementation specification: Node struct (~20 bytes), trait-based ECS, Fixed Q16.16 arithmetic, rule IR, two-tier execution (codegen + interpreter), delta buffer, determinism, parallelism, multiplayer/distribution.
 
-- Authority ultimately stems from credible threats of sanctions and emerges from actual relationship dynamics rather than being a separate stat.
-- Knowledge systems require careful distinction between personal knowledge (what actors know directly) and source knowledge (knowledge about information sources), with both following consistent structural patterns including confidence, secrecy, and temporal metadata.
-- The distinction between ownership (legal claims) and possession (physical control) must be maintained throughout all systems.
-- Roles function as perpetual reactive rulesets while plans represent finite goal-directed sequences, with orders serving as plan steps assigned across entity boundaries.
-- Counter-planning should trigger from observable world state conditions rather than requiring knowledge of specific enemy templates.
-- All game mechanics must reference concrete, measurable values rather than abstract concepts.
-- Economic value and social consequences like reputation should emerge naturally from system interactions rather than being directly encoded.
-- The simulation benefits from treating influence and causality as history-based computations rather than stored data, with caching for frequently accessed relationships.
+---
 
-## Approach & Patterns
+## System Overview
 
-Manu works through systematic iterative refinement, consistently questioning redundancies and seeking natural patterns. Design sessions involve progressing from initial sketches through multiple architectural approaches before settling on unified solutions. Technical discussions focus on eliminating verbose wrapper functions in favor of clean syntax similar to TypeScript or C#.
+### Core Stats — `spec_core_stats.md`
 
-The development approach emphasizes creating comprehensive reference documentation through artifact creation, with multiple iterations to remove unnecessary complexity and maintain focus on conceptual design rather than implementation details. Manu prefers technical precision over prose descriptions, requesting structured identifiers throughout and removal of natural language from data fields.
+**7 Attributes** (Str, Agi, Bod, Will, Wit, Spi, Cha) + 2 derived (Authority, Reputation). Authority and Reputation always derived, never stored.
 
-Problem-solving follows a pattern of establishing foundational frameworks first, then systematically expanding to cover edge cases and integration points. Design decisions consistently favor solutions that work efficiently with Unity's Burst compiler and potentially GPU compute shaders while maintaining clean separation between simulation logic and rendering systems.
+**23 Skills** (7 actions × 3 approaches + 2 meta). Approaches: Direct, Indirect, Structured. Skill bonus = skill + attr1 + attr2. Trade-offs: intensity↔stealth, stealth↔effectiveness, awareness↔focus.
 
-## Tools & Resources
+**7 Drives**: Survival, Luxury, Dominance, Belonging, Knowledge, Lawful, Moral. Character flaws emerge from imbalances.
 
-The technical stack centers on Unity with Burst compiler optimization, using NativeList and NativeParallelMultiHashMap structures for cache-friendly iteration and O(1) lookups. The architecture supports distributed server designs where spatial partitions can run on different machines with delta merging for cross-partition interactions.
+**4-Axis Relationships**: Debt, Reputation, Affection, Familiarity. Any→any, asymmetric. Social trait with Owner + Target.
 
-Data structures leverage ECS-style component systems with trait-based interfaces, concrete archetype classes for common entity types, and hybrid approaches using bitmasks with precompiled trait combinations. The knowledge system uses three-tier aging (recent action logs, medium-term deltas, ancient snapshots) with run-length compression for efficiency.
+### Unified Tree — `spec_unified_tree.md`
 
-The system references established games like RimWorld, Dwarf Fortress, and Baldur's Gate 3 for validation and comparison, while incorporating domain-specific languages that map to C# subsets for executable rules and AI planning systems.
+Every entity (individual, group, army, city, item, knowledge, contract) is a Node (~20 bytes). Two trees: ContainerNode (physical) and ParentNode (hierarchy). `Weight=1` = individual, `Weight>1` = group. Traits provide all differentiation — no monolithic stat block.
+
+Split on variance threshold. Merge on similarity. Promote individuals for story relevance.
+
+**Shells and Cores**: simulation nodes (cores) are always-on; rendering proxies (shells) exist only when visible. Two independent tick loops (sim at 1–10 Hz, render at 30–60 Hz).
+
+### Conditions, Effects & Rule IR — `spec_expression_language.md`
+
+All world state access through trait fields. All mutations through 9 elementary ops (Accumulate, Decay, Set, Transfer, Spread, Create, Destroy, AddTrait, RemoveTrait). 5 built-in functions (distance, contains, count, sigmoid, depth). Authored in `.acf`, compiled to structured IR. Two consumers: codegen Burst (Tier 1) and interpreter (Tier 2).
+
+### Objects & Spatial Hierarchy — `spec_objects_and_space.md`
+
+**Objects**: Nodes with composable traits (Weapon, Armor, Perishable, Flammable, etc.). No type hierarchy, no separate Object struct. Owner via OwnedBy relationship trait. Holder = ContainerNode. Bulk groups via Weight. Materialize on demand.
+
+**Spatial**: Nodes with SpatialTrait at various scales (Tile through Empire). Derived properties (enclosed, roofed, temperature, light). Buildings = parent spatial nodes. Vehicles = moving subtrees. ConnectedTo edges define spatial graph.
+
+### Knowledge — `spec_knowledge.md`
+
+Three tiers: (1) local observation + role scope (free), (2) skill gates (free, on-demand), (3) virtual items (runtime cost). V-items are nodes with ImmaterialTrait + Mirrors + StatCopy + ObscurityTrait. Obscurity controls propagation (0=public, 1=secret). Cover stories = false v-items at lower obscurity.
+
+### File Format — `spec_file_format.md`
+
+`.acf` — TOML-compatible + `{ }` nesting + bare expressions. Three data types: rules (triggers), roles (reactive agency), plans (proactive agency). Two step keywords: `do` (act) and `wait` (condition). Rules use elementary op names in effects. Provenance tracking in `_provenance {}` blocks.
+
+### Rules — `spec_rules.md`
+
+World mechanics with no agency. Five layers: L0 Physics, L1 Biology, L2 Items, L3 Social, L4 Economic. Rules scope to trait tables. Effects use elementary ops. Batch modes auto-derived (Linear, Bernoulli, Poisson, NormalApprox). Adaptive timestep: minutes (combat) to years (worldgen). Rules as switches: Probability=0 cascades to prune dependent plans.
+
+### Roles — `spec_roles.md`
+
+Reactive agency. Repeating priority-sorted rules. Gained/lost through world state. Shift patterns for temporal activation. Inheritance for specialization. Cover ~95% of daily activity. ActiveRole relationship trait binds entity to role template. Roles become job instances when bound to workplace + holder.
+
+### Plans — `spec_plans.md`
+
+Proactive agency. Sequential do/wait steps with HTN method decomposition. Plans are v-items (nodes with ImmaterialTrait + PlanMetaTrait — shareable, stealable, stale-able). Probabilistic planning: step.prob → plan.confidence → plan.utility. AgencyTrait on executing entities tracks active plan. Groups execute via fractional allocation (max 4 concurrent plans). ~80–100 composable compounds as building blocks. Counter-plans trigger from observable state only, max depth 4.
+
+### Contracts & Authority — `spec_contracts_authority.md`
+
+Contracts are virtual items — nodes with ImmaterialTrait + ContractTermsTrait. Expectations are separate v-items + social judgment rules for enforcement. Authority always derived from four sources: Force, Delegation, Consensus, Tradition (via AuthStrengthTrait). Governance types emerge from source weightings. Orders decompose down the command chain with compliance checks.
+
+### Pathfinding — `spec_pathfinding.md`
+
+Flow-based. Pathfinding granularity matches tree depth: tile A* for individuals, region-level flow for groups, zone-level for armies. Throughput-limited connections create natural bottlenecks, traffic jams, chokepoints. Hauling = flow between inventory nodes. Supply chains = flow networks. Shell movement derived from flow state (no per-shell pathfinding).
+
+### Infrastructure — `spec_infrastructure.md`
+
+**Scale**: ~150 simulation entities regardless of population via grouping. <2ms per sim tick target.
+
+**History**: 3-tier aging (30-day detail → 1-year snapshots → milestone-only).
+
+**Bundles**: Compatible rule/role/plan/expectation sets discovered by sim stability testing.
+
+**Profiles**: Game profiles swap rule values, not behavior.
+
+**Tech**: Unity + Burst, Q16.16 Fixed, delta buffer, read-write phase separation, codegen + interpreter.
+
+**Pipeline**: LLM-assisted extraction from narrative/military/game/historical sources. GitHub Actions automation. Validation at 4 enforcement points.
+
+---
+
+## Reference & History
+
+- `architecture.md` — Implementation architecture (nodes, traits, rule IR, execution, scale, multiplayer)
+- `reference_rpg_stats.md` — RPG system comparison (AD&D, Rolemaster, DSA, GURPS, CoC)
+- `spec_discarded_alternatives.md` — All rejected designs with reasons for rejection (13 entries)
+- `MEMORY.md` — Project context and development approach
