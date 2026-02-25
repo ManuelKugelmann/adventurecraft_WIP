@@ -657,7 +657,61 @@ DESTROY(node) queues cascade in write phase:
 
 ---
 
-## 15. Open Points
+## 15. HTN-GOAP Planner
+
+The planner is a distinct subsystem layered above the rule engine. It operates on agent worldmodels, not ground truth.
+
+### ESTIMATE vs SIMULATE Duality
+
+Every world rule has two resolution contexts:
+
+```
+ESTIMATE — planner uses agent worldmodel to predict outcomes
+           (used during plan selection, method evaluation, counter-chain prediction)
+
+SIMULATE — engine resolves actual outcomes at execution time
+           (uses ground truth, rule IR, full probability)
+```
+
+The gap between ESTIMATE and SIMULATE is the source of agent fallibility: plans fail when worldmodel diverges from reality. This is not a bug. It is the mechanism for realistic imperfect-information behavior.
+
+### Planner Resolution Modes
+
+Single `ActionCall` steps resolve via one of five modes, selected automatically by weight and timescale:
+
+| Mode | When Used | Method |
+|------|-----------|--------|
+| Deterministic | Small groups, short dt | Direct computation |
+| BernoulliOnce | Single event, any dt | One coin flip |
+| PoissonCount | Rare events over time | Poisson approximation |
+| NormalApprox | Large groups, long dt | Central limit theorem |
+| TimeToThreshold | Wait-until conditions | Inverse CDF |
+
+The same plan step that resolves as `BernoulliOnce` for a lone agent resolves as `NormalApprox` for a cohort of 200. The plan template is unchanged; the resolution mode is selected by the executor at runtime.
+
+### Agent Worldmodel
+
+Agents maintain:
+```
+Worldmodel {
+    base:      observed world state snapshot
+    overrides: { path → (value, confidence, freshness) }
+}
+```
+
+`self.knows(X)` queries the worldmodel. Plan `needs {}` blocks run against worldmodel, not ground truth. A plan whose `needs` checks fail in the worldmodel cannot be selected regardless of actual world state.
+
+### Plan Statistics
+
+Plans accumulate execution statistics via Bayesian inference:
+- Prior probabilities come from dataset templates
+- Observed outcomes update posteriors
+- Statistics aggregate by timescale (rolls at minutes, step counts at days, phase outcomes at weeks, plan-level at months)
+- Veterans (high prior accuracy) make better decisions because their estimates match simulation
+
+---
+
+## 16. Open Points
 
 ### 15.1 Effect Owner vs Target
 
@@ -745,7 +799,7 @@ TraitLayout enables interpreter + GPU access for mod traits.
 
 ---
 
-## 16. Summary
+## 17. Summary
 
 ```
 1 node type:        Node (~20 bytes, blittable)

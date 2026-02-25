@@ -2,6 +2,8 @@
 
 Plans handle non-routine activity: strategic decisions, novel situations, multi-step goals that cross role boundaries. Plans override role rules temporarily.
 
+See also: [adventurecraft_HTN_GOAP](https://github.com/ManuelKugelmann/adventurecraft_HTN_GOAP) — the companion dataset repo implementing this spec.
+
 ---
 
 ## Structure
@@ -24,9 +26,12 @@ Plans are knowledge items. They can be shared (taught), stolen (espionage), stal
 
 ---
 
-## Methods (HTN Decomposition)
+## Plan Syntax: `needs` and `outcomes`
 
-Plans have multiple methods — alternative approaches to achieve the same goal. The planner selects the method whose preconditions are met and whose expected utility is highest:
+The canonical plan sections are `needs {}` and `outcomes {}`:
+
+- **`needs {}`** — Boolean filters checked against the agent's **worldmodel** (belief state, not ground truth). Serves dual purpose: plan eligibility gate and method selection traits.
+- **`outcomes {}`** — Probabilistic postconditions covering goals, side effects, and costs. Time elapsed is another outcome field, not a special field.
 
 ```acf
 plan military.siege [military, territorial] {
@@ -36,7 +41,11 @@ plan military.siege [military, territorial] {
         force = EntityRef
     }
 
-    require { attack >= 30 }
+    needs {
+        self.knows(target.location)
+        self.knows(target.garrison)
+        Skills.Tactics >= 2
+    }
 
     method assault {
         when {
@@ -48,7 +57,7 @@ plan military.siege [military, territorial] {
         assemble: do military.assemble_force { destination = $target.region }
         survey:   do Sense.Indirect { target = $target.walls }
         BREACH:   do military.breach_walls { walls = $target.walls }
-            prob = sigmoid(Skills.Attack - target.walls.Condition * 0.5)
+            prob = combat_chance(force, target.walls)
             fail = STARVE
         storm:    do military.storm { garrison = $target.garrison }
     }
@@ -66,22 +75,129 @@ plan military.siege [military, territorial] {
         demand:   do Influence.Direct { target = $target.leader }
     }
 
-    done { OwnedBy.Target == force.faction }
-    fail { force.Weight < 10 }
+    outcomes {
+        goal:    OwnedBy.Target == force.faction   prob = 0.7
+        failure: force.Weight < 10                 prob = 0.15
+        cost:    elapsed >= 30                     value = -force.Weight * 0.1
+    }
 }
 ```
+
+> **Compatibility note:** `require {}` (single precondition block) and `done/fail {}` (bare postcondition lines) remain valid for simple plans. `needs {}` + `outcomes {}` is the preferred form for complex plans with multiple possible outcomes.
+
+---
+
+## Agent Worldmodel
+
+Agents plan from their **worldmodel** — a filtered copy of world state plus a divergence layer with confidence metadata. Ground truth is never duplicated; only divergences from last observation are stored.
+
+```
+Worldmodel {
+    base:      snapshot of observed world state
+    overrides: {path → (value, confidence, freshness)}
+}
+```
+
+`self.knows(X)` queries the worldmodel. Mismatches between worldmodel and reality cause runtime plan failures — this is correct behavior reflecting imperfect information, not a bug.
+
+Knowledge gaps are planning gates: if `self.knows(target.location)` is false, any plan requiring it cannot be selected until the agent has observed or been told the target's location.
+
+---
+
+## Knowledge as Planning Gate
+
+Almost every `needs` check implicitly requires knowledge. The planner cannot select a method unless all `self.knows()` checks pass in the worldmodel.
+
+Knowledge acquisition plans run first:
+
+```
+acquire_information → fills worldmodel → unlocks downstream plans
+```
+
+This creates realistic dependency chains: an army cannot siege what it hasn't scouted; a spy cannot blackmail without intelligence on the target.
+
+---
+
+## Drives as Global Needs
+
+Persistent drives (Survival, Luxury, Dominance, Belonging, Knowledge, Lawful, Moral) constrain all outcome evaluation. The planner:
+
+1. Weights outcomes by drive intensity (`outcome.value *= drive.intensity`)
+2. Auto-inserts maintenance plans when a plan would violate a drive threshold
+
+```
+if Drives.Survival < 30 and plan.outcomes has no survival maintenance:
+    insert acquire_item { target = food } before next step
+```
+
+Drive thresholds act as hard stops. A starving soldier will not execute a siege method that has no food acquisition step.
+
+---
+
+## Universal Building Blocks
+
+Eight primitive plans compose into all complex hierarchies. Every compound plan ultimately decomposes to some combination of these:
+
+| Plan | Description |
+|------|-------------|
+| `acquire_access` | Universal dispatcher — routes to gain_entry, influence_person, or modify_node based on obstacle type |
+| `acquire_item` | Obtain a physical object (buy, steal, craft, find) |
+| `move_to` | Reach a location (walk, ride, sail, teleport) |
+| `acquire_information` | Learn something (observe, ask, research, spy) |
+| `gain_entry` | Pass a barrier (door, lock, guard, social gate) |
+| `influence_person` | Change an agent's behavior or state (persuade, deceive, threaten, bribe) |
+| `modify_node` | Change a node's traits (repair, build, destroy, configure) |
+| `protect_node` | Prevent changes to a node (guard, hide, fortify) |
+
+Composite plans reference only sub-plans. Leaf plans contain concrete `do Action.Approach` steps. This two-level structure keeps templates reusable and avoids monolithic plan bodies.
+
+---
+
+## Resolution Functions
+
+All contested outcomes use **named resolution functions**, not inline sigmoid expressions. This makes plan templates readable, testable, and replaceable:
+
+```acf
+# Correct — named function, implementable by engine or approximation
+BREACH: do military.breach_walls { walls = $target.walls }
+    prob = combat_chance(force, target.walls)
+
+# Avoid — opaque inline expression
+BREACH: do military.breach_walls { walls = $target.walls }
+    prob = sigmoid(Skills.Attack * 0.7 - target.walls.Condition * 0.5 + 3.2)
+```
+
+Standard resolution functions (defined in `schema/utility_functions.acf`):
+
+| Category | Functions |
+|----------|-----------|
+| **ENGINE** (world truth) | `distance`, `reachable`, `visible`, `nearby`, `co_located` |
+| **RESOLUTION** (adversarial) | `detection_risk`, `combat_chance`, `persuasion_chance`, `deception_chance`, `intimidation_chance`, `lockpick_chance`, `trade_advantage`, `chase_chance` |
+| **KNOWLEDGE** (belief state) | `self.knows`, `worldmodel`, `route_to`, `location_of`, `reputation_of`, `suspected` |
+| **DERIVED** (data only) | `accessible`, `affordable`, `pursued`, `hostile`, `allied`, `capable`, `authority_over`, `threat_level`, `travel_time` |
+| **SUGAR** (shorthand) | `portable`, `locked`, `burning`, `concealed`, `container_has_space` |
+| **PLAN** (feasibility) | `can_reach`, `can_acquire`, `can_learn`, `can_enter` |
 
 ---
 
 ## Probabilistic Planning
 
 ```
-step.prob = Expression over traits (never a constant)
+step.prob = resolution_function(actor, context)   # never a bare constant
 plan.confidence = product(step.prob for critical path)
 plan.utility = confidence × goal_value - total_cost
 ```
 
-Bayesian posteriors from experience override dataset priors. Veterans pick better plans.
+Bayesian posteriors from experience override dataset priors. Statistics accumulate per plan template and aggregate by timescale:
+
+| Timescale | Aggregation |
+|-----------|-------------|
+| Minutes | Individual rolls (full resolution) |
+| Days | Step counts (NormalApprox) |
+| Weeks | Phase outcomes (summary statistics) |
+| Months | Plan-level only |
+
+Veterans pick better plans because their Bayesian priors are accurate.
 
 ---
 
@@ -227,7 +343,7 @@ plan political.subversion [political, covert] {
 
 ## Counter-Plans
 
-Trigger from **observable world state only**. Never reference drives, plans, knowledge, mood, skills, or contracts.
+Counters trigger from **observable world state only** — detected `ActionCall` observables (externally visible actions), never internal plans, drives, knowledge, mood, skills, or contracts.
 
 ```
 Plan A: observable actions → ThreatSignature matches → Counter B selected
@@ -247,3 +363,29 @@ plan military.siege [military] {
 ```
 
 Counter selection is a skill check. A leader with Tactics ≥ 3 considers all counters. Tactics ≥ 1 might only see the obvious one.
+
+### Three-Tier Counter System
+
+Increasing sophistication, decreasing performance:
+
+| Tier | Mechanism | When Used |
+|------|-----------|-----------|
+| **Static counters** | Pre-cached adversary response blocks in plan templates | Default — fast, deterministic |
+| **Sequential suspect plans** | `suspect.*` plan activation based on observed threat signatures | When threat patterns match multiple possible hostile plans |
+| **Full adversary simulation** | Shallow simulation of adversary role + drives, capped at depth 2 | High-stakes decisions only |
+
+**Suspect plans**: Running a `suspect.*` plan *is* the suspicion state. Guards trigger them when observable threat signatures match. Plan recognition works through plan execution, not through a separate inference mechanism.
+
+```acf
+role guard.city_watch {
+    suspect_smuggler: when detected_hidden_cargo(nearby) and night_time,
+        do suspect.smuggling { target = $suspicious_entity }, priority = 80
+
+    suspect_scout:    when observed_systematic_movement(nearby, pattern=recon),
+        do suspect.hostile_reconnaissance { target = $movement_source }, priority = 70
+}
+```
+
+The counter chain forms a bidirectional graph. Adversary response links are of two kinds:
+- **Resolution links**: outcome determined by engine rules (skill contests, physical events)
+- **Behavioral links**: adversary choices based on their roles and drives (agent decision)

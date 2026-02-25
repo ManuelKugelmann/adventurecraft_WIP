@@ -8,8 +8,8 @@ TOML-compatible flat sections + `{ }` nesting + bare expressions. Parsed to IR c
 
 ```
 Keyword     = rule | role | plan | method | do | wait | when | done | fail
-            | require | counter | params | effect | condition | bundle
-            | template | profile | layer | scope
+            | require | needs | outcomes | counter | suspect | params
+            | effect | condition | bundle | template | profile | layer | scope
 Identifier  = [a-zA-Z_][a-zA-Z0-9_]*
 QualifiedId = Identifier ('.' Identifier)*
 ParamRef    = '$' QualifiedId
@@ -131,7 +131,11 @@ plan criminal.heist [criminal, economic] {
         mark = EntityRef
     }
 
-    require { sense >= 40 }
+    needs {
+        self.knows(vault.location)
+        self.knows(vault.security)
+        Skills.Deception >= 2
+    }
 
     method classic {
         when {
@@ -147,17 +151,22 @@ plan criminal.heist [criminal, economic] {
         distract:    do Influence.Indirect { target = $guard, false = true }
         infiltrate:  do Move.Indirect { target = $vault, secrecy = 0.9 }
         CRACK:       do Modify.Direct { target = $vault_door }
-            prob = sigmoid(Skills[5] - $vault.security)
+            prob = lockpick_chance(self, $vault_door)
             fail = ABORT
         grab:        do Transfer.Direct { source = $vault, secrecy = 0.9 }
         ABORT:       do Move.Indirect { destination = $safehouse, secrecy = 0.9 }
         cleanup:     do cover_tracks {}
     }
 
-    done { contains(Owner, Valuable) }
-    fail { KnowsAbout(law_enforcement, Owner) exists }
+    outcomes {
+        goal:    contains(Owner, Valuable)                    prob = 0.6
+        failure: KnowsAbout(law_enforcement, Owner) exists    prob = 0.25
+        cost:    elapsed >= 3                                 value = -crew.Weight * 0.05
+    }
 }
 ```
+
+> Equivalent older syntax using `require {}` + `done/fail` lines is still valid for simple plans.
 
 ---
 

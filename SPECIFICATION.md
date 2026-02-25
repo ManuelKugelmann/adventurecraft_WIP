@@ -70,7 +70,7 @@ Reactive agency. Repeating priority-sorted rules. Gained/lost through world stat
 
 ### Plans — `spec_plans.md`
 
-Proactive agency. Sequential do/wait steps with HTN method decomposition. Plans are v-items (nodes with ImmaterialTrait + PlanMetaTrait — shareable, stealable, stale-able). Probabilistic planning: step.prob → plan.confidence → plan.utility. AgencyTrait on executing entities tracks active plan. Groups execute via fractional allocation (max 4 concurrent plans). ~80–100 composable compounds as building blocks. Counter-plans trigger from observable state only, max depth 4.
+Proactive agency. Sequential do/wait steps with HTN method decomposition. Plans are v-items (nodes with ImmaterialTrait + PlanMetaTrait — shareable, stealable, stale-able). Plan syntax: `needs {}` (preconditions checked against agent worldmodel) + `outcomes {}` (probabilistic postconditions including costs). Probabilistic planning: step.prob via named resolution functions → plan.confidence → plan.utility. AgencyTrait on executing entities tracks active plan. Groups execute via fractional allocation (max 4 concurrent plans). Eight universal building blocks (acquire_access, acquire_item, move_to, acquire_information, gain_entry, influence_person, modify_node, protect_node) compose into ~80–100 compounds. Counter-plans trigger from observable state only; three tiers: static counters, suspect plans, shallow adversary simulation (depth 2, chains ≤ 4).
 
 ### Contracts & Authority — `spec_contracts_authority.md`
 
@@ -99,6 +99,11 @@ Flow-based. Pathfinding granularity matches tree depth: tile A* for individuals,
 ## Reference & History
 
 - `architecture.md` — Implementation architecture (nodes, traits, rule IR, execution, scale, multiplayer)
+- `CLAUDE.md` — AI assistant context: authoring rules, validation checklist, action table, architecture references
 - `reference_rpg_stats.md` — RPG system comparison (AD&D, Rolemaster, DSA, GURPS, CoC)
 - `spec_discarded_alternatives.md` — All rejected designs with reasons for rejection (13 entries)
 - `MEMORY.md` — Project context and development approach
+
+## Companion Repository
+
+[adventurecraft_HTN_GOAP](https://github.com/ManuelKugelmann/adventurecraft_HTN_GOAP) — the behavior dataset implementation. Contains `.acf` files (rules, roles, plans), Python schema/validator, utility function catalog, world rules catalog, extraction pipeline, and CI/CD hooks. This spec is the authoritative reference; HTN_GOAP is the implementation.
