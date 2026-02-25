@@ -134,22 +134,23 @@ Drive thresholds act as hard stops. A starving soldier will not execute a siege 
 
 ---
 
-## Universal Building Blocks
+## Composition Hierarchy
 
-Eight primitive plans compose into all complex hierarchies. Every compound plan ultimately decomposes to some combination of these:
+Plans are structured in three tiers. Templates call compounds; compounds call leaf plans; leaf plans call atomic engine actions.
 
-| Plan | Description |
-|------|-------------|
-| `acquire_access` | Universal dispatcher — routes to gain_entry, influence_person, or modify_node based on obstacle type |
-| `acquire_item` | Obtain a physical object (buy, steal, craft, find) |
-| `move_to` | Reach a location (walk, ride, sail, teleport) |
-| `acquire_information` | Learn something (observe, ask, research, spy) |
-| `gain_entry` | Pass a barrier (door, lock, guard, social gate) |
-| `influence_person` | Change an agent's behavior or state (persuade, deceive, threaten, bribe) |
-| `modify_node` | Change a node's traits (repair, build, destroy, configure) |
-| `protect_node` | Prevent changes to a node (guard, hide, fortify) |
+```
+Template      military.siege               — top-level goal (1 plan node)
+Compounds     assemble_force, blockade,    — domain building blocks (~80–100 total)
+              breach_walls, storm
+Leaf plans    Move.Structured, Attack.Direct  — thin wrapper around one 7×3 step
+Atomic        ActionCall                   — engine resolves skill + prob
+```
 
-Composite plans reference only sub-plans. Leaf plans contain concrete `do Action.Approach` steps. This two-level structure keeps templates reusable and avoids monolithic plan bodies.
+**Composite plans** reference only sub-plan names. **Leaf plans** contain exactly one `do Action.Approach` step. Never mix: a composite plan that contains a bare `do` is a parse error.
+
+Steps decompose lazily. A faction creates a plan with 4 high-level compound steps. When step 2 becomes active and is assigned to a cohort, the cohort decomposes it into sub-steps. Unused branches never decompose.
+
+Plan granularity matches node granularity: no entity holds a plan more detailed than its own depth in the hierarchy.
 
 ---
 
