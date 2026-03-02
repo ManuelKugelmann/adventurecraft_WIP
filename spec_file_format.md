@@ -118,6 +118,18 @@ do      actor acts        → Action.Approach { params }
 wait    actor waits       → condition becomes true
 ```
 
+### Action Modifiers
+
+Any `do` step accepts universal modifiers alongside target params. These scale the action's execution, not its resolution:
+
+```
+secrecy      0.0–1.0    how covertly the action is performed
+concentration 0.0–1.0   effort/focus applied
+speed        0.0–1.0    pace (affects time cost and noise)
+```
+
+Modifiers are optional. Omitting one leaves it at the actor's default. They are inputs to resolution functions — `secrecy` feeds into `deception_chance()`, `observation_chance()`, etc.
+
 ---
 
 ## Example
@@ -144,17 +156,17 @@ plan criminal.heist [criminal, economic] {
         }
         priority = Drives.Luxury * 0.6
 
-        case_joint:  do Sense.Indirect { target = $vault }
+        case_joint:  do Sense.Indirect { target = $vault, secrecy = 0.8 }
         profile:     do Sense.Indirect { target = $mark }
         recruit:     do Influence.Indirect { target = $specialists }
         disguises:   do Modify.Structured { target = disguises }
         distract:    do Influence.Indirect { target = $guard, false = true }
-        infiltrate:  do Move.Indirect { target = $vault }
+        infiltrate:  do Move.Indirect { target = $vault, secrecy = 0.9 }
         CRACK:       do Modify.Direct { target = $vault_door }
             prob = lockpick_chance(self, $vault_door)
             fail = ABORT
-        grab:        do Transfer.Direct { source = $vault }
-        ABORT:       do Move.Indirect { destination = $safehouse }
+        grab:        do Transfer.Direct { source = $vault, secrecy = 0.9 }
+        ABORT:       do Move.Indirect { destination = $safehouse, secrecy = 0.9 }
         cleanup:     do cover_tracks {}
     }
 
