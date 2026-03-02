@@ -1,12 +1,12 @@
 # AdventureCraft — Architecture
 
-## 1. Core
+## Core
 
 One node type. Traits are everything. Same rules at every scale.
 
 ---
 
-## 2. Units
+## Units
 
 ```
 Space:  1 tile = 33cm
@@ -17,7 +17,7 @@ Clock:  int64 world tick counter
 
 ---
 
-## 3. Fixed-Point
+## Fixed-Point
 
 ```
 Fixed — Q16.16, int32, 0x00010000 = 1.0
@@ -30,7 +30,7 @@ IDs, tick counters, quantities: plain integers.
 
 ---
 
-## 4. Node
+## Node
 
 ```
 Node {
@@ -106,7 +106,7 @@ Alice owns sword even after dropping it.
 
 ---
 
-## 5. Traits
+## Traits
 
 Each trait kind is its own blittable struct with named fields.
 Every trait has `Owner: NodeId`. Relationship traits also have `Target: NodeId`.
@@ -255,7 +255,7 @@ AuthStrengthTrait   { Owner, Force: Fixed, Consensus: Fixed, Tradition: Fixed, D
 
 ---
 
-## 6. Trait Storage
+## Trait Storage
 
 ### Single Traits
 
@@ -308,7 +308,7 @@ Typed structs for C#/codegen. Raw `byte* + offset` for interpreter and GPU. Same
 
 ---
 
-## 7. Skills
+## Skills
 
 ```
 Idx  Action     Approach     Name              Attr1+Attr2
@@ -341,7 +341,7 @@ Skill bonus = skill + attr1 + attr2. Attr pairs data-driven.
 
 ---
 
-## 8. Rules
+## Rules
 
 ### Authoring (.acf)
 
@@ -484,7 +484,7 @@ WorldRule {
 
 ---
 
-## 9. Execution
+## Execution
 
 ### Two Tiers
 
@@ -566,7 +566,7 @@ struct AccumulateJob : IJobParallelFor {
 
 ---
 
-## 10. Scale
+## Scale
 
 ```
 enum SpatialScale : byte {
@@ -592,7 +592,7 @@ Worldgen: same sim at dt=1 year for N centuries.
 
 ---
 
-## 11. Multi-Scale Simulation Loop & Significance Promotion
+## Multi-Scale Simulation Loop & Significance Promotion
 
 The adaptive-dt table describes *normal* simulation. Significance promotion describes the exception: when a coarse-scale event warrants fine-grained resolution, the engine temporarily zooms in, resolves at full fidelity, then collapses back.
 
@@ -600,7 +600,7 @@ The adaptive-dt table describes *normal* simulation. Significance promotion desc
 
 The loop is coarse-to-fine, exception-driven. Coarse partitions run first; each emits events that are scored for significance. Events above threshold are **promoted** — the relevant node is split, dt is dropped to the finer tier, lower rule layers activate, and a sub-loop runs until the event resolves. The result propagates back up; the node merges and the coarse loop resumes.
 
-Non-promoted events commit via batch resolution (ESTIMATE mode). Promoted events resolve via full simulation (SIMULATE mode). The gap between the two is where agent worldmodels diverge from reality — see §16.
+Non-promoted events commit via batch resolution (ESTIMATE mode). Promoted events resolve via full simulation (SIMULATE mode). The gap between the two is where agent worldmodels diverge from reality — see HTN-GOAP Planner.
 
 ### Significance Score
 
@@ -631,7 +631,7 @@ Region (1 month dt)
   ← battle outcome committed at region
 ```
 
-Promotion uses the node split mechanism (§2). Demotion uses merge plus a single catch-up tick to sync any drift that accumulated during the sub-loop.
+Promotion uses the node split mechanism (see Units). Demotion uses merge plus a single catch-up tick to sync any drift that accumulated during the sub-loop.
 
 ### Budget-Constrained Priority
 
@@ -639,7 +639,7 @@ When multiple events simultaneously exceed the significance threshold, the engin
 
 ---
 
-## 12. Multiplayer & Distribution
+## Multiplayer & Distribution
 
 ### Authoritative Server
 
@@ -656,7 +656,7 @@ Sync barrier per layer before write phase.
 
 ---
 
-## 13. Virtual Items
+## Virtual Items
 
 Nodes with ImmaterialTrait. No separate type.
 Get forgery, staleness, theft, propagation for free.
@@ -674,7 +674,7 @@ Meta-knowledge: v-item Mirrors another v-item. Recursive.
 
 ---
 
-## 14. Templates
+## Templates
 
 ```
 NodeTemplate {
@@ -689,7 +689,7 @@ CREATE = allocate node, walk template parent chain, copy default traits.
 
 ---
 
-## 15. Node Deletion
+## Node Deletion
 
 DESTROY(node) queues cascade in write phase:
 
@@ -704,7 +704,7 @@ DESTROY(node) queues cascade in write phase:
 
 ---
 
-## 16. HTN-GOAP Planner
+## HTN-GOAP Planner
 
 The planner is a distinct subsystem layered above the rule engine. It operates on agent worldmodels, not ground truth.
 
@@ -724,7 +724,7 @@ The gap between ESTIMATE and SIMULATE is the source of agent fallibility: plans 
 
 ### Timescale Tiers
 
-The adaptive-dt system from §10 maps to five named planner tiers:
+The adaptive-dt system from Scale maps to five named planner tiers:
 
 | Tier | dt | Node precision |
 |------|----|----------------|
@@ -750,7 +750,7 @@ Plans accumulate Bayesian statistics per template, aggregated by timescale. Data
 
 ---
 
-## 17. Open Points
+## Open Points
 
 ### 15.1 Effect Owner vs Target
 
@@ -838,7 +838,7 @@ TraitLayout enables interpreter + GPU access for mod traits.
 
 ---
 
-## 18. Summary
+## Summary
 
 ```
 1 node type:        Node (~20 bytes, blittable)
