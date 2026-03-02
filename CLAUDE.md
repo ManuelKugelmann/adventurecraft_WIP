@@ -13,6 +13,19 @@ The companion dataset repository is [adventurecraft_HTN_GOAP](https://github.com
 
 ---
 
+## Spec Writing Tone: High-Level Concepts, Low Code
+
+**This repo is a conceptual reference, not an implementation.** When editing spec files, follow this rule:
+
+- **Explain the concept in prose.** What does it do, why does it exist, what properties does it have?
+- **One brief example per idea** — just enough to show the pattern, not to document every case.
+- **No implementation detail.** No exact sigmoid formulas, no full method bodies, no expression-language catalogs. Those belong in `adventurecraft_HTN_GOAP`.
+- **Reference the companion repo** for anything catalog-level (full function lists, schema details, validation rules).
+
+If you find yourself writing a second code block for the same concept, or copying expression syntax from HTN_GOAP, stop — describe it in a sentence instead.
+
+---
+
 ## Three Core Data Types
 
 All content — world mechanics, agent behavior, and goal-directed action — is expressed in three declaration types in `.acf` files:
