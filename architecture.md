@@ -592,7 +592,54 @@ Worldgen: same sim at dt=1 year for N centuries.
 
 ---
 
-## 11. Multiplayer & Distribution
+## 11. Multi-Scale Simulation Loop & Significance Promotion
+
+The adaptive-dt table describes *normal* simulation. Significance promotion describes the exception: when a coarse-scale event warrants fine-grained resolution, the engine temporarily zooms in, resolves at full fidelity, then collapses back.
+
+### Loop Shape
+
+The loop is coarse-to-fine, exception-driven. Coarse partitions run first; each emits events that are scored for significance. Events above threshold are **promoted** — the relevant node is split, dt is dropped to the finer tier, lower rule layers activate, and a sub-loop runs until the event resolves. The result propagates back up; the node merges and the coarse loop resumes.
+
+Non-promoted events commit via batch resolution (ESTIMATE mode). Promoted events resolve via full simulation (SIMULATE mode). The gap between the two is where agent worldmodels diverge from reality — see §16.
+
+### Significance Score
+
+An event's significance is a composite over several orthogonal dimensions:
+
+| Dimension | Trigger condition |
+|---|---|
+| **Player proximity** | Event is within the player's observation range, or involves a player-known entity |
+| **Named agent involvement** | A story-relevant or tracked individual participates |
+| **Outcome entropy** | ESTIMATE confidence is low — result could resolve several ways |
+| **Faction impact magnitude** | Power or resource delta exceeds a configured threshold |
+| **Probability surprise** | A low-probability event fires at coarse scale — batch approximation is insufficient |
+| **Contested outcome** | Coarse resolution produces no clear winner; outcome is held rather than committed |
+
+The contested case is lazy evaluation: instead of forcing a coarse approximation, the engine flags the outcome as unresolved and defers it until a drill-down can run. Dependent state changes are blocked until resolution.
+
+### Cascade Depth
+
+Drill-downs chain naturally. A regional event promotes to settlement, which surfaces a specific battle, which involves a named heir, which promotes to individual combat. There is no imposed depth limit — the cascade terminates when the event resolves, significance drops below threshold, or the spatial scale floor (`Tile`) is reached.
+
+```
+Region (1 month dt)
+  └→ Settlement (1 week dt)    — battle surfaces
+       └→ District (1 day dt)  — heir's company engaged
+            └→ Tile (10s dt)   — duel resolves
+            ← heir status committed
+       ← company outcome committed
+  ← battle outcome committed at region
+```
+
+Promotion uses the node split mechanism (§2). Demotion uses merge plus a single catch-up tick to sync any drift that accumulated during the sub-loop.
+
+### Budget-Constrained Priority
+
+When multiple events simultaneously exceed the significance threshold, the engine maintains a priority queue ordered by significance score. Highest-significance events are promoted first. Lower-scoring events either wait for the next coarse tick or are committed via ESTIMATE if their significance is marginal. Player proximity naturally dominates this ordering.
+
+---
+
+## 12. Multiplayer & Distribution
 
 ### Authoritative Server
 
@@ -609,7 +656,7 @@ Sync barrier per layer before write phase.
 
 ---
 
-## 12. Virtual Items
+## 13. Virtual Items
 
 Nodes with ImmaterialTrait. No separate type.
 Get forgery, staleness, theft, propagation for free.
@@ -627,7 +674,7 @@ Meta-knowledge: v-item Mirrors another v-item. Recursive.
 
 ---
 
-## 13. Templates
+## 14. Templates
 
 ```
 NodeTemplate {
@@ -642,7 +689,7 @@ CREATE = allocate node, walk template parent chain, copy default traits.
 
 ---
 
-## 14. Node Deletion
+## 15. Node Deletion
 
 DESTROY(node) queues cascade in write phase:
 
@@ -657,7 +704,7 @@ DESTROY(node) queues cascade in write phase:
 
 ---
 
-## 15. HTN-GOAP Planner
+## 16. HTN-GOAP Planner
 
 The planner is a distinct subsystem layered above the rule engine. It operates on agent worldmodels, not ground truth.
 
@@ -703,7 +750,7 @@ Plans accumulate Bayesian statistics per template, aggregated by timescale. Data
 
 ---
 
-## 16. Open Points
+## 17. Open Points
 
 ### 15.1 Effect Owner vs Target
 
@@ -791,7 +838,7 @@ TraitLayout enables interpreter + GPU access for mod traits.
 
 ---
 
-## 17. Summary
+## 18. Summary
 
 ```
 1 node type:        Node (~20 bytes, blittable)
