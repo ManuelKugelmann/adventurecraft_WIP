@@ -675,58 +675,31 @@ SIMULATE — engine resolves actual outcomes at execution time
 
 The gap between ESTIMATE and SIMULATE is the source of agent fallibility: plans fail when worldmodel diverges from reality. This is not a bug. It is the mechanism for realistic imperfect-information behavior.
 
-### Named Timescale Tiers
+### Timescale Tiers
 
-The adaptive-dt system from §10 has five named tiers used by the planner:
+The adaptive-dt system from §10 maps to five named planner tiers:
 
-| Tier | dt | Node precision | Shell rendered? |
-|------|----|----------------|-----------------|
-| combat | minutes | individual | yes |
-| local | days | squad | maybe |
-| regional | weeks | cohort | no |
-| world | months | faction | no |
-| history | years | civilisation | no |
+| Tier | dt | Node precision |
+|------|----|----------------|
+| combat | minutes | individual |
+| local | days | squad |
+| regional | weeks | cohort |
+| world | months | faction |
+| history | years | civilisation |
 
-Plan templates are timescale-agnostic. The executor selects tier based on the executing node's scale and current simulation mode.
+Plan templates are timescale-agnostic. The executor selects tier from the executing node's scale.
 
 ### Planner Resolution Modes
 
-Single `ActionCall` steps resolve via one of five modes, selected automatically by weight and timescale tier:
-
-| Mode | When | Selection rule |
-|------|------|----------------|
-| Deterministic | weight=1, combat tier | direct roll |
-| BernoulliOnce | weight=1, local+ tier | `1 − (1−p)^dt` |
-| PoissonCount | weight>1, local tier | count successes |
-| NormalApprox | weight>1, regional+ tier | CLT over group |
-| TimeToThreshold | any, goal-threshold wait | inverse Gaussian |
-
-The same plan step resolves as `BernoulliOnce` for a lone agent and `NormalApprox` for a cohort of 200. The template is unchanged; the executor selects the mode at runtime.
+Five modes, selected automatically by node weight and tier: Deterministic (individual, combat), BernoulliOnce (individual, longer dt), PoissonCount (group, short dt), NormalApprox (group, long dt), TimeToThreshold (goal-threshold waits). The same plan template resolves differently for a lone agent vs a cohort of 200 — the template is unchanged.
 
 ### Agent Worldmodel
 
-Agents maintain a **filtered view of simulation history** plus a sparse override layer:
-
-```
-Worldmodel {
-    base:      filtered sim history (ticks this agent perceived)
-    overrides: { path → (value, confidence, freshness) }
-}
-```
-
-Because the simulation is deterministic, `base` is implemented as **sparse keyframe replay** — the agent replays only perceived ticks from the last keyframe. No full snapshot storage.
-
-`self.knows(X)` queries the worldmodel. Plan `needs {}` blocks run against worldmodel, not ground truth. A plan whose `needs` checks fail cannot be selected regardless of actual world state.
-
-`self.worldmodel($subject).active_plan` is a writeable path — suspect plans write it; role behaviors read it to trigger escalation.
+The planner operates on each agent's **worldmodel**: a filtered view of simulation history plus a sparse override layer. Because the simulation is deterministic, the base is stored as sparse keyframe replay rather than full snapshots. Suspect plans write worldmodel overrides; role behaviors read them to trigger escalation. `needs {}` blocks run against worldmodel, not ground truth — a plan whose preconditions fail in the worldmodel cannot be selected regardless of actual world state.
 
 ### Plan Statistics
 
-Plans accumulate execution statistics via Bayesian inference:
-- Prior probabilities come from dataset templates
-- Observed outcomes update posteriors
-- Statistics aggregate by timescale (rolls at minutes, step counts at days, phase outcomes at weeks, plan-level at months)
-- Veterans (high prior accuracy) make better decisions because their estimates match simulation
+Plans accumulate Bayesian statistics per template, aggregated by timescale. Dataset priors are updated by observed outcomes. Veterans make better decisions because their estimates match simulation.
 
 ---
 
