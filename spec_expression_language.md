@@ -32,7 +32,7 @@ effect: Spread Climate.Temperature conductivity=ConnectedTo.Conductivity
 
 ### SkillCheck (Probabilistic Gate)
 
-SkillCheck is a **condition** (not an effect). Evaluates sigmoid(attacker_skill - defender_skill) as a probability gate for subsequent effects:
+SkillCheck is a **condition** (not an effect). Evaluates as a probabilistic contest gate using `resolve_conflict()` internally:
 
 ```
 effect: SkillCheck Attack.Melee vs Defense.ActiveDefense
@@ -64,12 +64,14 @@ RemoveTrait     detach trait from node
 Used in both conditions and value sources:
 
 ```
-distance(A, B)          container chain walk → tile distance
-contains(node, kind)    ContainerIndex → any contained node with trait?
-count(node, kind)       ContainerIndex → how many contained with trait
-sigmoid(x)              lookup table, probability mapping
-depth(node)             container chain length
+distance(A, B)                              container chain walk → tile distance
+contains(node, kind)                        ContainerIndex → any contained node with trait?
+count(node, kind)                           ContainerIndex → how many contained with trait
+resolve_conflict(actor, opponent, context)  generic adversarial contest → probability
+depth(node)                                 container chain length
 ```
+
+`resolve_conflict()` is the base contest primitive. Named resolution functions (`combat_chance`, `deception_chance`, etc.) call it with domain-appropriate parameters. For uncontested skill checks a dedicated `skill_check(actor, skill, difficulty)` function is planned — currently `resolve_conflict()` is used as a placeholder.
 
 List grows with the game. Both codegen and interpreter implement these.
 

@@ -63,10 +63,10 @@ When writing or editing plan files:
 1. **`needs {}`** checks run against the agent's **worldmodel** (belief state), not ground truth. Use `self.knows(X)` for knowledge gates.
 2. **`outcomes {}`** lists all significant postconditions with probabilities. Costs (time, resources) are outcomes too.
 3. **Composite plans** reference only sub-plan names (`do military.assemble_force {}`). **Leaf plans** contain concrete `do Action.Approach` steps. Never mix.
-4. **Resolution functions** replace inline sigmoid expressions: `prob = combat_chance(attacker, defender)` not `prob = sigmoid(att * 0.7 - def * 0.5)`.
+4. **Resolution functions** replace inline expressions: `prob = combat_chance(attacker, defender)`. For generic contests: `resolve_conflict(actor, opponent, context)`. `sigmoid()` is no longer valid.
 5. **Counter observables** must reference only externally visible state: `pos`, `weight`, `faction`, `equipped`, `action`, `condition`, `visible`. Never: `drives`, `plans`, `knowledge`, `mood`, `skills`, `contracts`.
 6. **Decomposition depth ≤ 6.** Counter chains ≤ 4 deep.
-7. **Probabilities bounded 0–1.** Use `sigmoid()`, `prob()`, `min()`, or `max()` — bare numeric expressions get a warning.
+7. **Probabilities bounded 0–1.** Use `resolve_conflict()`, a named resolution function, or `min()`/`max()` clamping. `sigmoid()` is no longer valid.
 8. **Named steps.** Every `do` line needs a step name prefix (`name: do ...`). Bare `do` is a parse error.
 
 ---

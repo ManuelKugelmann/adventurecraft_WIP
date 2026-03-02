@@ -144,17 +144,17 @@ plan criminal.heist [criminal, economic] {
         }
         priority = Drives.Luxury * 0.6
 
-        case_joint:  do Sense.Indirect { target = $vault, secrecy = 0.8 }
+        case_joint:  do Sense.Indirect { target = $vault }
         profile:     do Sense.Indirect { target = $mark }
         recruit:     do Influence.Indirect { target = $specialists }
         disguises:   do Modify.Structured { target = disguises }
         distract:    do Influence.Indirect { target = $guard, false = true }
-        infiltrate:  do Move.Indirect { target = $vault, secrecy = 0.9 }
+        infiltrate:  do Move.Indirect { target = $vault }
         CRACK:       do Modify.Direct { target = $vault_door }
             prob = lockpick_chance(self, $vault_door)
             fail = ABORT
-        grab:        do Transfer.Direct { source = $vault, secrecy = 0.9 }
-        ABORT:       do Move.Indirect { destination = $safehouse, secrecy = 0.9 }
+        grab:        do Transfer.Direct { source = $vault }
+        ABORT:       do Move.Indirect { destination = $safehouse }
         cleanup:     do cover_tracks {}
     }
 
@@ -200,7 +200,7 @@ Stats in separate `.stats.acf` sidecars. Gitignored, runtime-generated.
 3.  Every do uses valid Action × Approach from 7×3 table
 4.  Every plan decomposes to leaf actions within depth 6
 5.  Every step has a name (bare do without name: is a parse error)
-6.  Every prob Expression is bounded 0..1 (sigmoid/prob/min/max)
+6.  Every prob Expression uses resolve_conflict(), a named resolution function, or min()/max() clamping — not bare sigmoid()
 7.  No references to authority or reputation as stored stats
 8.  Counter observables reference only externally visible state
     (NOT: drives, plans, knowledge, mood, skills, contracts)
