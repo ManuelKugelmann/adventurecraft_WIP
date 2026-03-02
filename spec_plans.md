@@ -89,18 +89,39 @@ plan military.siege [military, territorial] {
 
 ## Agent Worldmodel
 
-Agents plan from their **worldmodel** — a filtered copy of world state plus a divergence layer with confidence metadata. Ground truth is never duplicated; only divergences from last observation are stored.
+Agents plan from their **worldmodel** — a **filtered view of simulation history** plus a sparse override layer. Ground truth is never duplicated; agents store only divergences from what they have actually perceived.
 
 ```
 Worldmodel {
-    base:      snapshot of observed world state
-    overrides: {path → (value, confidence, freshness)}
+    base:      filtered sim history (what this agent has actually perceived)
+    overrides: { path → (value, confidence, freshness) }
 }
 ```
 
-`self.knows(X)` queries the worldmodel. Mismatches between worldmodel and reality cause runtime plan failures — this is correct behavior reflecting imperfect information, not a bug.
+Because the simulation is deterministic, the base is implemented as **sparse keyframe replay**: an agent replays only ticks they perceived from the last keyframe, avoiding full snapshot storage.
 
-Knowledge gaps are planning gates: if `self.knows(target.location)` is false, any plan requiring it cannot be selected until the agent has observed or been told the target's location.
+Overrides hold deductions and reports — things the agent inferred or was told that differ from what they directly observed. Suspect plans write overrides; role behaviors read them.
+
+**`self.knows(X)`** queries the worldmodel. Two query forms:
+
+```acf
+# Property query — does the agent know this trait value?
+self.knows(target.location)
+self.knows(properties_of($about))
+
+# History query — does the agent know this action happened?
+self.knows(performed($subject, Sense, target = $post))
+self.knows(performed($subject, Transfer, concealed = true))
+```
+
+History queries filter sim history by what this agent actually perceived — they are not stored facts. An agent who wasn't there cannot perceive a past action.
+
+A specific writeable worldmodel path:
+```acf
+self.worldmodel($subject).active_plan    # what plan the agent believes $subject is running
+```
+
+Mismatches between worldmodel and reality cause runtime plan failures — correct behavior for imperfect-information agents, not a bug.
 
 ---
 
@@ -173,11 +194,34 @@ Standard resolution functions (defined in `schema/utility_functions.acf`):
 | Category | Functions |
 |----------|-----------|
 | **ENGINE** (world truth) | `distance`, `reachable`, `visible`, `nearby`, `co_located` |
-| **RESOLUTION** (adversarial) | `detection_risk`, `combat_chance`, `persuasion_chance`, `deception_chance`, `intimidation_chance`, `lockpick_chance`, `trade_advantage`, `chase_chance` |
-| **KNOWLEDGE** (belief state) | `self.knows`, `worldmodel`, `route_to`, `location_of`, `reputation_of`, `suspected` |
+| **RESOLUTION** (adversarial) | `detection_risk`, `combat_chance`, `persuasion_chance`, `deception_chance`, `intimidation_chance`, `lockpick_chance`, `trade_advantage`, `chase_chance`, `observation_chance` |
+| **KNOWLEDGE** (belief state) | `self.knows`, `worldmodel`, `route_to`, `location_of`, `reputation_of`, `suspected`, `performed` |
 | **DERIVED** (data only) | `accessible`, `affordable`, `pursued`, `hostile`, `allied`, `capable`, `authority_over`, `threat_level`, `travel_time` |
 | **SUGAR** (shorthand) | `portable`, `locked`, `burning`, `concealed`, `container_has_space` |
 | **PLAN** (feasibility) | `can_reach`, `can_acquire`, `can_learn`, `can_enter` |
+
+### Two-Stage Detection
+
+Detection is a world rule (see `spec_rules.md`), not a plan step. It produces two sequential results:
+
+1. **Spot** — "is someone there?" Resolved by observer's Observation skill vs actor's Stealth + equipment + location lighting + action noise.
+2. **Identify** — "who is it?" Resolved separately: familiarity edge + Observation skill vs disguise quality + distance. An actor can be spotted but not recognised.
+
+```acf
+# From detection.acf (L3 rule):
+spot_by_guard: when observer.role == guard AND co_located(observer, actor.location) AND NOT concealed(actor),
+    prob = sigmoid(observer.Skills.observation - actor.Skills.stealth
+                   - actor.equipment.stealth_bonus + action.noise * 0.5
+                   - location.Lighting.concealment * 0.3),
+    effect: visible(actor, observer)
+
+identify_known: when visible(actor, observer) AND edge(observer, actor, familiarity) > 0.3,
+    prob = sigmoid(edge(observer, actor, familiarity) * 30 + observer.Skills.observation * 0.5
+                   - actor.equipment.disguise_quality - distance(observer, actor) * 0.1),
+    effect: observer.knows(identity_of(actor))
+```
+
+**Evidence** is created by physical actions as ordinary items — nodes with `Physical + Decayable` traits. They obey normal world rules: rain decays them, fire destroys them, the `cover_tracks` compound plan Destroys them. There is no separate forensics system; investigators find evidence via Sense checks on items.
 
 ---
 
@@ -363,7 +407,20 @@ plan military.siege [military] {
 }
 ```
 
-Counter selection is a skill check. A leader with Tactics ≥ 3 considers all counters. Tactics ≥ 1 might only see the obvious one.
+Counter selection is a skill check (Tactics). A leader with Tactics ≥ 3 considers all counters; Tactics ≥ 1 may only see the obvious one.
+
+**Drive-aligned selection**: when multiple counters are viable, the agent's drive profile selects among them:
+
+```acf
+counter threat.troops_massing {
+    military.fortify      when Condition.Condition > 30   # cautious (high Survival)
+    military.sortie       when Weight > force.Weight * 0.3 # aggressive (high Dominance)
+    military.feint_flank  when Skills.Tactics >= 3         # cunning (high Wit)
+    political.call_allies when AlliedWith exists            # diplomatic (high Belonging)
+}
+```
+
+The agent runs `plan.utility = confidence × goal_value × drive_weight − cost` for each viable counter and picks the highest. A high-Survival agent rates `fortify` highest; a high-Dominance agent rates `sortie` highest. Same threat, different drives → different responses emerge naturally.
 
 ### Three-Tier Counter System
 
@@ -375,17 +432,38 @@ Increasing sophistication, decreasing performance:
 | **Sequential suspect plans** | `suspect.*` plan activation based on observed threat signatures | When threat patterns match multiple possible hostile plans |
 | **Full adversary simulation** | Shallow simulation of adversary role + drives, capped at depth 2 | High-stakes decisions only |
 
-**Suspect plans**: Running a `suspect.*` plan *is* the suspicion state. Guards trigger them when observable threat signatures match. Plan recognition works through plan execution, not through a separate inference mechanism.
+**Suspect plans have exactly one job: write the worldmodel.** Running a `suspect.*` plan is the suspicion state; it writes `self.worldmodel($subject).active_plan` to the best-matching reconstructed plan. Escalation — alert, arrest, report, pursue — is not the suspect plan's job. It comes from the agent's role behaviors, which trigger on the worldmodel override.
+
+```
+# Separation of concerns:
+suspect.*    → writes self.worldmodel($subject).active_plan
+role rules   → read self.worldmodel($subject).active_plan, trigger escalation
+```
 
 ```acf
-role guard.city_watch {
-    suspect_smuggler: when detected_hidden_cargo(nearby) and night_time,
-        do suspect.smuggling { target = $suspicious_entity }, priority = 80
+# Suspect plan — write-only to worldmodel
+plan suspect.theft [detection] {
+    method pickpocket_pattern {
+        needs {
+            self.knows(performed($subject, Move, target = $mark, distance < 1))
+            AND self.knows(performed($subject, Transfer, source = $mark))
+        }
+        assess: do Sense.Structured { target = $subject }
+        outcomes { self.worldmodel($subject).active_plan = criminal.pickpocket }
+    }
+}
 
-    suspect_scout:    when observed_systematic_movement(nearby, pattern=recon),
-        do suspect.hostile_reconnaissance { target = $movement_source }, priority = 70
+# Role behavior — reads worldmodel, handles escalation
+role market_guard : guard {
+    arrest: when self.worldmodel($subject).active_plan matches criminal.*
+                AND self.skills.melee > $subject.skills.active_defense,
+            do Attack.Indirect { target = $subject, intensity = 0.4 }, priority = 40
 }
 ```
+
+**Dismissal is free**: if no method's `needs` are satisfied, the plan cannot run and no worldmodel override is written. No false suspicion.
+
+Guard roles are **specialised by suspect plan training**: a vault guard runs `suspect.heist`; a gate guard runs `suspect.smuggling`; a caravan guard runs `suspect.ambush`. The base guard role handles escalation uniformly across all of them, because it only reads the worldmodel.
 
 The counter chain forms a bidirectional graph. Adversary response links are of two kinds:
 - **Resolution links**: outcome determined by engine rules (skill contests, physical events)

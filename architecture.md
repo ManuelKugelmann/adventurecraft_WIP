@@ -675,31 +675,50 @@ SIMULATE — engine resolves actual outcomes at execution time
 
 The gap between ESTIMATE and SIMULATE is the source of agent fallibility: plans fail when worldmodel diverges from reality. This is not a bug. It is the mechanism for realistic imperfect-information behavior.
 
+### Named Timescale Tiers
+
+The adaptive-dt system from §10 has five named tiers used by the planner:
+
+| Tier | dt | Node precision | Shell rendered? |
+|------|----|----------------|-----------------|
+| combat | minutes | individual | yes |
+| local | days | squad | maybe |
+| regional | weeks | cohort | no |
+| world | months | faction | no |
+| history | years | civilisation | no |
+
+Plan templates are timescale-agnostic. The executor selects tier based on the executing node's scale and current simulation mode.
+
 ### Planner Resolution Modes
 
-Single `ActionCall` steps resolve via one of five modes, selected automatically by weight and timescale:
+Single `ActionCall` steps resolve via one of five modes, selected automatically by weight and timescale tier:
 
-| Mode | When Used | Method |
-|------|-----------|--------|
-| Deterministic | Small groups, short dt | Direct computation |
-| BernoulliOnce | Single event, any dt | One coin flip |
-| PoissonCount | Rare events over time | Poisson approximation |
-| NormalApprox | Large groups, long dt | Central limit theorem |
-| TimeToThreshold | Wait-until conditions | Inverse CDF |
+| Mode | When | Selection rule |
+|------|------|----------------|
+| Deterministic | weight=1, combat tier | direct roll |
+| BernoulliOnce | weight=1, local+ tier | `1 − (1−p)^dt` |
+| PoissonCount | weight>1, local tier | count successes |
+| NormalApprox | weight>1, regional+ tier | CLT over group |
+| TimeToThreshold | any, goal-threshold wait | inverse Gaussian |
 
-The same plan step that resolves as `BernoulliOnce` for a lone agent resolves as `NormalApprox` for a cohort of 200. The plan template is unchanged; the resolution mode is selected by the executor at runtime.
+The same plan step resolves as `BernoulliOnce` for a lone agent and `NormalApprox` for a cohort of 200. The template is unchanged; the executor selects the mode at runtime.
 
 ### Agent Worldmodel
 
-Agents maintain:
+Agents maintain a **filtered view of simulation history** plus a sparse override layer:
+
 ```
 Worldmodel {
-    base:      observed world state snapshot
+    base:      filtered sim history (ticks this agent perceived)
     overrides: { path → (value, confidence, freshness) }
 }
 ```
 
-`self.knows(X)` queries the worldmodel. Plan `needs {}` blocks run against worldmodel, not ground truth. A plan whose `needs` checks fail in the worldmodel cannot be selected regardless of actual world state.
+Because the simulation is deterministic, `base` is implemented as **sparse keyframe replay** — the agent replays only perceived ticks from the last keyframe. No full snapshot storage.
+
+`self.knows(X)` queries the worldmodel. Plan `needs {}` blocks run against worldmodel, not ground truth. A plan whose `needs` checks fail cannot be selected regardless of actual world state.
+
+`self.worldmodel($subject).active_plan` is a writeable path — suspect plans write it; role behaviors read it to trigger escalation.
 
 ### Plan Statistics
 
