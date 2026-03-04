@@ -1,12 +1,12 @@
 # AdventureCraft — Architecture
 
-## 1. Core
+## Core
 
 One node type. Traits are everything. Same rules at every scale.
 
 ---
 
-## 2. Units
+## Units
 
 ```
 Space:  1 tile = 33cm
@@ -17,7 +17,7 @@ Clock:  int64 world tick counter
 
 ---
 
-## 3. Fixed-Point
+## Fixed-Point
 
 ```
 Fixed — Q16.16, int32, 0x00010000 = 1.0
@@ -30,7 +30,7 @@ IDs, tick counters, quantities: plain integers.
 
 ---
 
-## 4. Node
+## Node
 
 ```
 Node {
@@ -106,7 +106,7 @@ Alice owns sword even after dropping it.
 
 ---
 
-## 5. Traits
+## Traits
 
 Each trait kind is its own blittable struct with named fields.
 Every trait has `Owner: NodeId`. Relationship traits also have `Target: NodeId`.
@@ -255,7 +255,7 @@ AuthStrengthTrait   { Owner, Force: Fixed, Consensus: Fixed, Tradition: Fixed, D
 
 ---
 
-## 6. Trait Storage
+## Trait Storage
 
 ### Single Traits
 
@@ -308,7 +308,7 @@ Typed structs for C#/codegen. Raw `byte* + offset` for interpreter and GPU. Same
 
 ---
 
-## 7. Skills
+## Skills
 
 ```
 Idx  Action     Approach     Name              Attr1+Attr2
@@ -341,7 +341,7 @@ Skill bonus = skill + attr1 + attr2. Attr pairs data-driven.
 
 ---
 
-## 8. Rules
+## Rules
 
 ### Authoring (.acf)
 
@@ -484,7 +484,7 @@ WorldRule {
 
 ---
 
-## 9. Execution
+## Execution
 
 ### Two Tiers
 
@@ -566,7 +566,7 @@ struct AccumulateJob : IJobParallelFor {
 
 ---
 
-## 10. Scale
+## Scale
 
 ```
 enum SpatialScale : byte {
@@ -592,7 +592,54 @@ Worldgen: same sim at dt=1 year for N centuries.
 
 ---
 
-## 11. Multiplayer & Distribution
+## Multi-Scale Simulation Loop & Significance Promotion
+
+The adaptive-dt table describes *normal* simulation. Significance promotion describes the exception: when a coarse-scale event warrants fine-grained resolution, the engine temporarily zooms in, resolves at full fidelity, then collapses back.
+
+### Loop Shape
+
+The loop is coarse-to-fine, exception-driven. Coarse partitions run first; each emits events that are scored for significance. Events above threshold are **promoted** — the relevant node is split, dt is dropped to the finer tier, lower rule layers activate, and a sub-loop runs until the event resolves. The result propagates back up; the node merges and the coarse loop resumes.
+
+Non-promoted events commit via batch resolution (ESTIMATE mode). Promoted events resolve via full simulation (SIMULATE mode). The gap between the two is where agent worldmodels diverge from reality — see HTN-GOAP Planner.
+
+### Significance Score
+
+An event's significance is a composite over several orthogonal dimensions:
+
+| Dimension | Trigger condition |
+|---|---|
+| **Player proximity** | Event is within the player's observation range, or involves a player-known entity |
+| **Named agent involvement** | A story-relevant or tracked individual participates |
+| **Outcome entropy** | ESTIMATE confidence is low — result could resolve several ways |
+| **Faction impact magnitude** | Power or resource delta exceeds a configured threshold |
+| **Probability surprise** | A low-probability event fires at coarse scale — batch approximation is insufficient |
+| **Contested outcome** | Coarse resolution produces no clear winner; outcome is held rather than committed |
+
+The contested case is lazy evaluation: instead of forcing a coarse approximation, the engine flags the outcome as unresolved and defers it until a drill-down can run. Dependent state changes are blocked until resolution.
+
+### Cascade Depth
+
+Drill-downs chain naturally. A regional event promotes to settlement, which surfaces a specific battle, which involves a named heir, which promotes to individual combat. There is no imposed depth limit — the cascade terminates when the event resolves, significance drops below threshold, or the spatial scale floor (`Tile`) is reached.
+
+```
+Region (1 month dt)
+  └→ Settlement (1 week dt)    — battle surfaces
+       └→ District (1 day dt)  — heir's company engaged
+            └→ Tile (10s dt)   — duel resolves
+            ← heir status committed
+       ← company outcome committed
+  ← battle outcome committed at region
+```
+
+Promotion uses the node split mechanism (see Units). Demotion uses merge plus a single catch-up tick to sync any drift that accumulated during the sub-loop.
+
+### Budget-Constrained Priority
+
+When multiple events simultaneously exceed the significance threshold, the engine maintains a priority queue ordered by significance score. Highest-significance events are promoted first. Lower-scoring events either wait for the next coarse tick or are committed via ESTIMATE if their significance is marginal. Player proximity naturally dominates this ordering.
+
+---
+
+## Multiplayer & Distribution
 
 ### Authoritative Server
 
@@ -609,7 +656,7 @@ Sync barrier per layer before write phase.
 
 ---
 
-## 12. Virtual Items
+## Virtual Items
 
 Nodes with ImmaterialTrait. No separate type.
 Get forgery, staleness, theft, propagation for free.
@@ -627,7 +674,7 @@ Meta-knowledge: v-item Mirrors another v-item. Recursive.
 
 ---
 
-## 13. Templates
+## Templates
 
 ```
 NodeTemplate {
@@ -642,7 +689,7 @@ CREATE = allocate node, walk template parent chain, copy default traits.
 
 ---
 
-## 14. Node Deletion
+## Node Deletion
 
 DESTROY(node) queues cascade in write phase:
 
@@ -657,7 +704,53 @@ DESTROY(node) queues cascade in write phase:
 
 ---
 
-## 15. Open Points
+## HTN-GOAP Planner
+
+The planner is a distinct subsystem layered above the rule engine. It operates on agent worldmodels, not ground truth.
+
+### ESTIMATE vs SIMULATE Duality
+
+Every world rule has two resolution contexts:
+
+```
+ESTIMATE — planner uses agent worldmodel to predict outcomes
+           (used during plan selection, method evaluation, counter-chain prediction)
+
+SIMULATE — engine resolves actual outcomes at execution time
+           (uses ground truth, rule IR, full probability)
+```
+
+The gap between ESTIMATE and SIMULATE is the source of agent fallibility: plans fail when worldmodel diverges from reality. This is not a bug. It is the mechanism for realistic imperfect-information behavior.
+
+### Timescale Tiers
+
+The adaptive-dt system from Scale maps to five named planner tiers:
+
+| Tier | dt | Node precision |
+|------|----|----------------|
+| combat | minutes | individual |
+| local | days | squad |
+| regional | weeks | cohort |
+| world | months | faction |
+| history | years | civilisation |
+
+Plan templates are timescale-agnostic. The executor selects tier from the executing node's scale.
+
+### Planner Resolution Modes
+
+Five modes, selected automatically by node weight and tier: Deterministic (individual, combat), BernoulliOnce (individual, longer dt), PoissonCount (group, short dt), NormalApprox (group, long dt), TimeToThreshold (goal-threshold waits). The same plan template resolves differently for a lone agent vs a cohort of 200 — the template is unchanged.
+
+### Agent Worldmodel
+
+The planner operates on each agent's **worldmodel**: a filtered view of simulation history plus a sparse override layer. Because the simulation is deterministic, the base is stored as sparse keyframe replay rather than full snapshots. Suspect plans write worldmodel overrides; role behaviors read them to trigger escalation. `needs {}` blocks run against worldmodel, not ground truth — a plan whose preconditions fail in the worldmodel cannot be selected regardless of actual world state.
+
+### Plan Statistics
+
+Plans accumulate Bayesian statistics per template, aggregated by timescale. Dataset priors are updated by observed outcomes. Veterans make better decisions because their estimates match simulation.
+
+---
+
+## Open Points
 
 ### 15.1 Effect Owner vs Target
 
@@ -745,7 +838,7 @@ TraitLayout enables interpreter + GPU access for mod traits.
 
 ---
 
-## 16. Summary
+## Summary
 
 ```
 1 node type:        Node (~20 bytes, blittable)
